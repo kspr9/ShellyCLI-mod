@@ -1,0 +1,3599 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+4. Repository files, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+<additional_info>
+
+</additional_info>
+
+</file_summary>
+
+<directory_structure>
+bin/
+  console.js
+  duration.jq
+  fetch-1pm.js
+  fetch.js
+  fetch2.js
+  fetch3.js
+  fetch4.js
+  freemem.sh
+  gainsToCSV.sh
+  read-1pm.js
+  read.js
+config/
+  refs-10000w-1pf.json
+  refs-1000w-1pf.json
+  refs-100w-1pf.json
+  refs-200w-05pf.json
+  refs-200w-1pf.json
+  refs-2300w-1pf.json
+  refs-300w-1pf.json
+  refs-500w-1pf.json
+  refs-50w-1pf.json
+  refs-9200w-1pf.json
+env/
+  .env
+packages/
+  equipment/
+    it8615.js
+    package.json
+  shelly/
+    package.json
+    shelly-1pm.js
+    shelly-3em.js
+    shelly.js
+  transport/
+    package.json
+    udp.js
+    websocket.js
+src/
+  model.js
+  utils.js
+.gitignore
+fetch_shelly_data_last_hour.sh
+fetch_shelly_data_since_last_fetch.sh
+fetch_shelly_monophase_data_since_last_fetch.sh
+LICENSE
+package.json
+README.md
+Shelly3EM.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="bin/fetch-1pm.js">
+#!/usr/bin/env node
+import { Shelly1PM } from '../packages/shelly/shelly-1pm.js';
+import { wsTransport } from '@allterco/transport/websocket.js';
+import { Command, Argument, Option } from 'commander';
+import cliProgress from 'cli-progress';
+import { writeFileSync } from 'fs';
+
+const debug = process.env.DEBUG || 'none';
+
+async function fetchData(
+  startDate,
+  endDate,
+  { shelly: _shellyIP, output: _outputFileName, channel: _channel }
+) {
+  const _transport = new wsTransport();
+  const _testDev = new Shelly1PM(_transport);
+  _transport.setDebug(debug);
+  _testDev.setDebug(debug);
+
+  // Default to channel 0 if not specified
+  const channelId = parseInt(_channel || 0);
+  if (isNaN(channelId) || channelId < 0 || channelId > 2) {
+    console.error('Invalid channel ID. Must be 0, 1, or 2');
+    return;
+  }
+
+  const _dRegEx = /([0-9]*)([d,D,h,H,m])/;
+  const _matchDayPeriod = startDate.match(_dRegEx);
+  let _startDate, _endDate;
+  if (_matchDayPeriod && _matchDayPeriod.length > 1) {
+    _endDate = new Date();
+    _startDate = new Date();
+    if (_matchDayPeriod[2].toLowerCase() == 'd') {
+      _startDate.setDate(_endDate.getDate() - parseInt(_matchDayPeriod[1]));
+    } else if (_matchDayPeriod[2].toLowerCase() == 'h') {
+      _startDate.setHours(_endDate.getHours() - parseInt(_matchDayPeriod[1]));
+    } else if (_matchDayPeriod[2].toLowerCase() == 'm') {
+      _startDate.setMinutes(_endDate.getMinutes() - parseInt(_matchDayPeriod[1]));
+    }
+  } else {
+    _startDate = new Date(Date.parse(startDate));
+    _endDate = endDate ? new Date(endDate) : new Date();
+  }
+
+  const _startTS = _startDate.getTime();
+  const _endTS = _endDate.getTime();
+  console.log('Shelly 1PM device at ', _shellyIP);
+  console.log(
+    'Reading device data from channel', channelId,
+    'for period', new Date(_startTS),
+    'to', new Date(_endTS),
+    '\n'
+  );
+  let _emDataIteratorResult = null;
+
+  try {
+    await _transport.connect(_shellyIP);
+    const _devInfo = await _testDev.getInfo();
+    const progressBar = new cliProgress.SingleBar(
+      {},
+      cliProgress.Presets.shades_classic
+    );
+    progressBar.start(100, 0);
+
+    const msToS = (ms) => Math.round(ms / 1000);
+    // Use the specific channel's EM1Data instance
+    const em1Data = _testDev.getEM1Data(channelId);
+    const _resultIterator = em1Data.getPeriodIterator(
+      msToS(_startTS),
+      msToS(_endTS),
+      channelId
+    );
+
+    let _deviceDataResults = [];
+
+    const _startTimeMs = Date.now();
+    do {
+      _emDataIteratorResult = await _resultIterator.next();
+      if (_emDataIteratorResult.done) {
+        break;
+      }
+
+      _deviceDataResults.push([
+        _emDataIteratorResult.value.ts,
+        ..._emDataIteratorResult.value.record,
+      ]);
+
+      progressBar.update(_emDataIteratorResult.value.percent);
+    } while (_emDataIteratorResult.done == false);
+    const _endTimeMs = Date.now();
+    
+    progressBar.update(100);
+
+    console.log('\n');
+    
+    _outputFileName = _outputFileName || `${_devInfo.mac}_ch${channelId}.log`;
+    _outputFileName = _outputFileName.replace('[mac]', _devInfo.mac)
+    console.log('Writing output file', _outputFileName);
+    _deviceDataResults.forEach((value) => {
+      writeFileSync(_outputFileName, value.join(',') + '\n', {
+        flag: 'a+',
+      });
+    });
+
+    console.log('Results of this fetch operation: ');
+    console.log('Device calls: ', _emDataIteratorResult.value.deviceCalls);
+    console.log('Time elapsed in ms: ', _endTimeMs - _startTimeMs);
+    console.log('Number of items: ', _emDataIteratorResult.value.itemsCount);
+    console.log(
+      'Average number of items in a response: ',
+      _emDataIteratorResult.value.averageItemsPerCall
+    );
+  } catch (e) {
+    console.error('Could not fetch data. Check connection to device.', e);
+  } finally {
+    console.log('Fetch complete.');
+  }
+}
+
+const cli = new Command('fetch-1pm');
+
+cli
+  .argument(
+    '<start-date>',
+    'Start datetime of the period or [1,2,3][d,h,m] e.g. 1d means one day of data, 2h means 2 hours of data, 3m - three minutes'
+  )
+  .argument('[end-date]')
+  .addOption(
+    new Option('--shelly <shelly-ip>', 'Shelly IP address').env('SHELLY')
+  )
+  .addOption(
+    new Option('-c --channel [channel-id]', 'Channel ID (0, 1, or 2)').env('CHANNEL')
+  )
+  .option(
+    '-o, --output [filename]',
+    'filename for output, defaults to <device-mac>_ch<channel>.log'
+  )
+  .action(fetchData)
+  .addHelpText(
+    'after',
+    `
+Example date format:
+  2022-08-09T14:00:00`
+  );
+
+async function main() {
+  return await cli.showHelpAfterError().parseAsync();
+}
+
+main()
+  .then((_) => {
+    process.exit(0);
+  })
+  .catch((_) => {
+    process.exit(-1);
+  });
+</file>
+
+<file path="bin/read-1pm.js">
+#!/usr/bin/env node
+import { readFileSync } from 'fs';
+import { Command, Option } from 'commander';
+import { Shelly1PM } from '../packages/shelly/shelly-1pm.js';
+import { wsTransport } from '@allterco/transport/websocket.js';
+import { mapToFile } from '../src/utils.js';
+import {
+  measurementFromDeviceEMStatus,
+  measurementFromReferenceValues,
+  mergeMeasurements,
+} from '../src/model.js';
+
+const DEBUG = process.env.DEBUG || 'none';
+
+const _wait = async (_ms) => new Promise((resolve) => setTimeout(resolve, _ms));
+
+async function read({ shelly: _shellyIP, output: _outputFileName, channel: _channel }) {
+  console.log('Shelly 1PM device at ', _shellyIP);
+  const _transport = new wsTransport();
+  const _testDev = new Shelly1PM(_transport);
+  _transport.setDebug(DEBUG);
+  _testDev.setDebug(DEBUG);
+
+  // Default to channel 0 if not specified
+  const channelId = parseInt(_channel || 0);
+  if (isNaN(channelId) || channelId < 0 || channelId > 2) {
+    console.error('Invalid channel ID. Must be 0, 1, or 2');
+    return;
+  }
+
+  try {
+    await _transport.connect(_shellyIP);
+    
+    // Use getEM1 method to access the specific channel
+    const em1 = _testDev.getEM1(channelId);
+    const _status = await em1.getStatus();
+    
+    const _measurement = measurementFromDeviceEMStatus(_status.response);
+    const _resultMap = new Map([
+      ['mac', _testDev.info.mac],
+      ['channel', channelId],
+      ...Object.entries(_measurement),
+    ]);
+    console.table(_resultMap);
+    if (_outputFileName) {
+      mapToFile(_resultMap, _outputFileName);
+      console.log('Readings written to', _outputFileName);
+    }
+  } catch (e) {
+    console.error('Device read error', e);
+    throw e;
+  }
+}
+
+class ShellyCommand extends Command {
+  createCommand(name) {
+    const _command = new Command(name);
+    _command.addOption(
+      new Option('--shelly <shelly-ip>', 'Shelly IP address').env('SHELLY')
+    );
+    _command.addOption(
+      new Option('-o --output [output-file]', 'File to output results to').env(
+        'OUTPUT'
+      )
+    );
+    _command.addOption(
+      new Option('-c --channel [channel-id]', 'Channel ID (0, 1, or 2)').env(
+        'CHANNEL'
+      )
+    );
+    return _command;
+  }
+}
+
+const cli = new ShellyCommand('read-1pm');
+
+cli.command('read').description('Read device data').action(read);
+
+async function main() {
+  return await cli.showHelpAfterError().parseAsync();
+}
+
+main()
+  .then((_) => {
+    process.exit(0);
+  })
+  .catch((_) => {
+    process.exit(-1);
+  });
+</file>
+
+<file path="packages/shelly/shelly-1pm.js">
+import { Shelly, DeviceComponent } from './shelly.js';
+
+class EM1 extends DeviceComponent {
+  constructor() {
+    super(...arguments);
+  }
+  async getStatus(id=0) {
+    return super.getStatus({id});
+  }
+}
+
+const EM_ERRORS = {
+  InvalidDate: 'Invalid date parameter',
+};
+
+class EM1Data extends DeviceComponent {
+  constructor() {
+    super(...arguments);
+  }
+  async getData(params) {
+    return this._dev.request({
+      method: [this.name, 'GetData'].join('.'),
+      params,
+    });
+  }
+  async getRecords(params) {
+    return this._dev.request({
+      method: [this.name, 'GetRecords'].join('.'),
+      params,
+    });
+  }
+  getParams(ts, end_ts, id = 0, add_keys = false) {
+    return {
+      id,
+      ts,
+      end_ts,
+      add_keys,
+    };
+  }
+  async *getPeriodIterator(startTS, endTS, id = 0, incPeriod = 60) {
+    let _currentTS = startTS;
+    const _lastTS = endTS;
+    //cache for device returned values
+    let _emDataResult = null;
+    if (_currentTS > _lastTS)
+      throw new Error('Incorrect period. Start date should be before end date');
+    let _numberOfDeviceCalls = 0;
+    let _numberOfItems = 0;
+    let _incPeriod = incPeriod;
+    const _requestedRecords = Math.round((_lastTS - _currentTS) / _incPeriod);
+    let _recordsRemaining = _requestedRecords;
+    //start interrogating the device
+    do {
+      const _emDataParams = this.getParams(_currentTS, _lastTS, id);
+      try {
+        _emDataResult = await this.getData(_emDataParams);
+      } catch(e) {
+        throw e;
+      }
+      _numberOfDeviceCalls++;
+      //loop through the data packets in a response
+      for (const _dataBlock of _emDataResult.response.data) {
+        _incPeriod = _dataBlock.period;
+        _currentTS = _dataBlock.ts;
+        _recordsRemaining -= Math.round(
+          (_dataBlock.ts - _currentTS) / _incPeriod
+        );
+        //loop through the value rows in a packet
+        for (const _dataRow of _dataBlock.values) {
+          _currentTS += _incPeriod;
+          if (_currentTS > _lastTS) break;
+          _numberOfItems++;
+          _recordsRemaining--;
+          yield {
+            record: _dataRow,
+            ts: _currentTS,
+            percent: Math.round(
+              (100 * (_requestedRecords - _recordsRemaining)) /
+                _requestedRecords
+            ),
+            remaining: _recordsRemaining,
+          };
+        }
+      }
+      const _nextTS = _emDataResult.response.next_record_ts || _lastTS + 1;
+      _recordsRemaining -= Math.round((_nextTS - _currentTS) / _incPeriod);
+      _currentTS = _nextTS;
+    } while (_currentTS <= _lastTS);
+    return {
+      deviceCalls: _numberOfDeviceCalls,
+      itemsCount: _numberOfItems,
+      averageItemsPerCall:
+        Math.round((_numberOfItems / _numberOfDeviceCalls) * 100) / 100,
+    };
+  }
+}
+
+class Config extends DeviceComponent {
+  constructor() {
+    super(...arguments);
+  }
+  async get(key='') {
+    return this._dev.request({
+      method: [this.name,'Get'].join('.'),
+      ...(key && { params: {key} })
+    })
+  }
+  async set(config) {
+    return this._dev.request({
+      method: [this.name,'Set'].join('.'),
+      params: {config}
+    })
+  }
+  async save() {
+    return this._dev.request({
+      method: [this.name,'Save'].join('.')
+    })
+  }
+}
+
+class Sys extends DeviceComponent {
+  constructor() {
+    super(...arguments);
+  }
+  async reboot() {
+    return this._dev.request({
+      method: [this.name,'Reboot'].join('.')
+    })
+  }
+}
+
+class Shelly1PM extends Shelly {
+  constructor() {
+    super(...arguments);
+    this.EM1_instances = [];
+    this.EM1Data_instances = [];
+    
+    // Create three instances for monophase profile
+    for (let i = 0; i < 3; i++) {
+      this.EM1_instances[i] = new EM1(this);
+      this.EM1Data_instances[i] = new EM1Data(this);
+    }
+    
+    // Default to first instance for backward compatibility
+    this.EM1 = this.EM1_instances[0];
+    this.EM1Data = this.EM1Data_instances[0];
+    this.Config = new Config(this);
+    this.Sys = new Sys(this);
+  }
+
+  // Helper methods to access specific instances
+  getEM1(id = 0) {
+    if (id < 0 || id > 2) {
+      throw new Error('Invalid EM1 instance ID. Must be 0, 1, or 2');
+    }
+    return this.EM1_instances[id];
+  }
+
+  getEM1Data(id = 0) {
+    if (id < 0 || id > 2) {
+      throw new Error('Invalid EM1Data instance ID. Must be 0, 1, or 2');
+    }
+    return this.EM1Data_instances[id];
+  }
+
+  dateToEMTS(date) {
+    if (!(date instanceof Date)) throw new Error(EM_ERRORS.InvalidDate);
+    return Math.round(date.getTime() / 1000);
+  }
+
+  setConfig(configKey, configObject) {
+    return this.request({
+      method: 'config.set',
+      params: { config: { [configKey]: configObject } },
+    });
+  }
+
+  getConfig(configKey) {
+    return this.request({
+      method: 'config.get',
+      params: {
+        key: configKey,
+      },
+    });
+  }
+
+  saveConfig(reboot = false) {
+    return this.request({
+      method: 'config.save',
+      params: { reboot: reboot },
+    });
+  }
+}
+
+export { Shelly1PM };
+</file>
+
+<file path="fetch_shelly_monophase_data_since_last_fetch.sh">
+#!/bin/bash
+# Add full environment path
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Find node executable
+NODE_CMD=""
+
+# Try the common commands first
+for CMD in node nodejs
+do
+    if command -v $CMD &> /dev/null; then
+        NODE_CMD=$(command -v $CMD)
+        echo "Found Node.js at: $NODE_CMD"
+        break
+    fi
+done
+
+# If not found in PATH, try to find it in common locations
+if [ -z "$NODE_CMD" ]; then
+    # Check NVM installation
+    NVM_NODE=$(find $HOME/.nvm -name node -type f -executable 2>/dev/null | head -n 1)
+    if [ -n "$NVM_NODE" ]; then
+        NODE_CMD=$NVM_NODE
+        echo "Found Node.js in NVM at: $NODE_CMD"
+    else
+        # Check system locations
+        SYS_NODE=$(find /usr /usr/local /opt -name node -type f -executable 2>/dev/null | head -n 1)
+        if [ -n "$SYS_NODE" ]; then
+            NODE_CMD=$SYS_NODE
+            echo "Found Node.js in system at: $NODE_CMD"
+        fi
+    fi
+fi
+
+if [ -z "$NODE_CMD" ]; then
+    echo "Error: Node.js not found. Please install Node.js or ensure it's in your PATH."
+    exit 1
+fi
+
+# Full path to Shelly IP
+SHELLY_IP="192.168.3.43"
+
+# Channel to read (0, 1, or 2) - can be overridden by setting CHANNEL env var
+CHANNEL=${CHANNEL:-0}
+
+# Directory where log files are stored
+LOG_DIR="."
+
+# Current timestamp in ISO-8601 format
+CURRENT_TIMESTAMP=$(date "+%Y-%m-%dT%H:%M:%S")
+
+# Format filename with the current timestamp and channel
+FILENAME="shelly_monophase_ch${CHANNEL}-${CURRENT_TIMESTAMP}.log"
+
+# Find most recent log file for this channel
+LATEST_LOG=$(find ${LOG_DIR} -name "shelly_monophase_ch${CHANNEL}-*.log" -type f | sort | tail -n 1)
+
+if [ -n "$LATEST_LOG" ]; then
+    # Extract timestamp directly from filename
+    PREV_TIMESTAMP=$(basename "$LATEST_LOG" | sed "s/shelly_monophase_ch${CHANNEL}-\(.*\)\.log/\1/")
+
+    echo "Found latest log: $LATEST_LOG"
+    echo "Starting fetch from: $PREV_TIMESTAMP for channel ${CHANNEL}"
+
+    # Fetch from previous timestamp until now
+    SHELLY=$SHELLY_IP CHANNEL=$CHANNEL $NODE_CMD /home/kspr/code/ShellyCLI-mod/bin/fetch-1pm.js $PREV_TIMESTAMP --output "$FILENAME"
+else
+    # If no previous log, fetch last 24 hours
+    echo "No previous log found, fetching last 24 hours for channel ${CHANNEL}"
+    SHELLY=$SHELLY_IP CHANNEL=$CHANNEL $NODE_CMD /home/kspr/code/ShellyCLI-mod/bin/fetch-1pm.js 24h --output "$FILENAME"
+fi
+
+echo "Data fetched and saved to $FILENAME"
+</file>
+
+<file path="Shelly3EM.md">
+# Shelly 3EM
+Shelly 3EM Gen3 is a 3 (three) phase Energy Metering device for a Y (star) 4 - four wire connection. The device measures consumed energy from the system and stores it on five minute intervals, with enhanced data for the Active Power, Apparent Power, Voltage, Current on the 3 phases.
+
+3EM device supports two distinct profiles: default - triphase and monophase.
+
+In the triphase profile there is a single energy meter EM which combines the readings per phase and provides totals for all phases, measuring three distinct phases and representing them. EMData is a single database for the entire device in this profile.
+
+In the monophase profile there are three energy meters EM1, one per measured channel. For each channel, there is a database instance EM1Data.
+
+### The following components are available in Shelly 3EM Gen3:
+
+System
+WiFi
+Bluetooth Low Energy
+Cloud
+MQTT
+Modbus
+Outbound Websocket
+1 instance of EM (em:0) **
+3 instances of EM1 (em1:0, em1:1, em1:2) * **
+1 instance of EMData (emdata:0)
+3 instances of EM1Data (em1data:0, em1data:1, em1data:2) *
+Virtual components
+BTHome components
+Up to 10 instances of Script
+
+* Available only in monophase profile.
+
+** The CTs of the device cannot be changed, thus the methods to self-calibrate the CTs are not available.
+
+## Parameters
+These parameters are used by the device to measure and report data to the user.
+
+voltage_limit_v - the voltage limit that the device can handle safely - set to 280V. Above 280V an error is triggered, the device will be damaged if higher voltages are applied.
+current_limit_a - the maximum current which the device can measure - set to 63A. The device is unable to measure above this limit, an error is triggered, the device will be damaged if higher currents are applied.
+power_threshold - the reporting threshold to notify for a change in Power value. Consists of two settings:
+ratio - ratio between new value and last received value - set to 0.05 or 5%
+absolute - absolute difference between new value and last received value - set to 10.0W
+voltage_threshold- the reporting threshold to notify for a change in Voltage value. Consists of two settings:
+ratio - ratio between new value and last received value - set to 0.05 or 5%
+absolute - absolute difference between new value and last received value - set to 1.0V
+current_threshold- the reporting threshold to notify for a change in Current value. Consists of two settings:
+ratio - ratio between new value and last received value - set to 0.05 or 5%
+absolute - absolute difference between new value and last received value - set to 0.05A
+power_factor_threshold- the reporting threshold to notify for a change in Power Factor value. Consists of two settings:
+ratio - ratio between new value and last received value - set to 0.05 or 5%
+absolute - absolute difference between new value and last received value - set to 0.01
+power_factor is a dimensionless value.
+energies are reported upon receiving a new value, they are not threshold dependent.
+Upon receiving a new value, it is checked against both the ratio and absolute differences, if one of them is satisfied - a new value is reported. After the check the new value becomes last received value.
+</file>
+
+<file path="bin/console.js">
+#!/usr/bin/env node
+import util from 'util';
+import { Shelly } from '@allterco/shelly/shelly.js';
+import { wsTransport } from '@allterco/transport/websocket.js';
+import { udpTransport } from '@allterco/transport/udp.js';
+import { default as consoleInput } from 'serverline';
+
+const DEBUG = process.env.DEBUG || 'none';
+const SHELLY = process.env.SHELLY || process.argv.slice(2)[0];
+const TRANSPORT = process.env.TRANSPORT || process.argv.slice(3)[0] || 'ws';
+const TRANSPORT_LIST = {
+	ws: wsTransport,
+	udp: udpTransport,
+};
+
+if (typeof SHELLY == undefined) {
+  console.log('Please provide device address');
+  process.exit(-1);
+}
+
+const COMPLETIONS = [
+	'Shelly.GetDeviceInfo',
+	'Shelly.GetStatus',
+	'Shelly.GetConfig',
+	'WiFi.GetConfig',
+	'WiFi.GetStatus',
+  'exit'
+];
+
+const TRANSPORT_TYPE = ['ws', 'udp'].includes(TRANSPORT.toLowerCase()) ? TRANSPORT.toLowerCase() : 'ws';
+const TRANSPORT_PROTO = TRANSPORT_LIST[TRANSPORT_TYPE];
+
+let minMessageLen = Number.MAX_VALUE;
+let maxMessageLen = 0;
+
+console.log(`Connecting to Shelly device at ${SHELLY} over ${TRANSPORT_TYPE}`);
+
+const _transport = new TRANSPORT_PROTO();
+const _testDev = new Shelly(_transport);
+_transport.setDebug(DEBUG);
+_testDev.setDebug(DEBUG);
+
+const handleSigint = () => {
+	console.log('');
+	console.log('Exiting Shelly console monitor');
+	console.log(`Message stats: Min: ${minMessageLen}, Max: ${maxMessageLen}`);
+	process.exit(0);
+}
+
+const prettyPrint = (json) => {
+  console.log(util.inspect(json, false, null, true));
+}
+
+consoleInput.init({
+	prompt: 'connecting > ',
+});
+
+consoleInput.setCompletion(COMPLETIONS.map((command) => command.toLowerCase()));
+
+consoleInput.on('line', async (line) => {
+	let [method, ...params] = line.split(' ');
+  if(method.toLowerCase() == 'exit') {
+    process.exit(0);
+  }
+  params = params.join(' ');
+	params = params ? params.trim() : '{}';
+	try {
+		params = JSON.parse(params);
+	} catch (e) {
+		console.error('Invalid JSON parameters ', params);
+		return;
+	}
+	const _request = { method, params };
+	console.log(_request);
+	try {
+		let result = await _testDev.request(_request);
+		console.log(`${method}:`);
+    prettyPrint(result.response);
+	} catch (e) {
+		console.error('Failed rpc call: ', e);
+	}
+});
+
+
+
+consoleInput.on('SIGINT', handleSigint);
+process.on('SIGINT', handleSigint);
+
+try {
+  _testDev.on('connect', () => {
+    console.log('Connected');
+    consoleInput.setPrompt(`${_testDev.info.id} > `);
+  });
+	_testDev.on('Notify', (message) => {
+		if (message.length < minMessageLen) minMessageLen = message.length;
+		if (message.length > maxMessageLen) maxMessageLen = message.length;
+		let ntfType = message.method == 'NotifyStatus' ? 'Status update' : 'Event update';
+		let _date = new Date();
+		_date.setTime(Math.round(message.params.ts) * 1000);
+		console.log(ntfType, _date.toTimeString());
+    prettyPrint(message);
+	});
+	_testDev.on('close', () => {
+		console.error('Connection closed');
+		process.exit(1);
+	});
+  await _transport.connect(SHELLY);
+	const _deviceStatus = await _testDev.request({ method: 'Shelly.GetStatus' });
+} catch (e) {
+	console.error(`Could not connect to device ${SHELLY}`, e);
+	process.exit(1);
+}
+</file>
+
+<file path="bin/duration.jq">
+def duration($limit; $separator; $default):
+  if type != "number" then
+    $default
+  else
+    . as $value
+    | [[31536000, "y"], [86400, "d"], [3600, "h"], [60, "m"], [1, "s"]]
+    | [label $out | foreach .[] as $item (
+        [$value, 1];
+        if $limit > 0 and .[1] > $limit then
+          break $out
+        elif .[0] >= $item[0] then
+          [.[0] % $item[0], .[1] + 1] + [(.[0] / $item[0] | floor | tostring) + $item[1]]
+        else
+          .[0:2]
+        end;
+        if length > 2 then
+          .[2]
+        else
+          empty
+        end)
+      ]
+    | if length > 0 then join($separator) else "0s" end
+  end;
+
+def duration($limit; $separator): duration($limit; $separator; "-");
+def duration($limit): duration($limit; " "; "-");
+def duration: duration(0; " "; "-");
+</file>
+
+<file path="bin/fetch.js">
+#!/usr/bin/env node
+import { Shelly3EM } from '@allterco/shelly/shelly-3em.js';
+import { wsTransport } from '@allterco/transport/websocket.js';
+import { Command, Argument, Option } from 'commander';
+import cliProgress from 'cli-progress';
+import { writeFileSync } from 'fs';
+
+const debug = process.env.DEBUG || 'none';
+
+async function fetchData(
+  startDate,
+  endDate,
+  { shelly: _shellyIP, output: _outputFileName }
+) {
+  const _transport = new wsTransport();
+  const _testDev = new Shelly3EM(_transport);
+  _transport.setDebug(debug);
+  _testDev.setDebug(debug);
+
+  const _dRegEx = /([0-9]*)([d,D,h,H,m])/;
+  const _matchDayPeriod = startDate.match(_dRegEx);
+  let _startDate, _endDate;
+  if (_matchDayPeriod.length > 1) {
+    _endDate = new Date();
+    _startDate = new Date();
+    if (_matchDayPeriod[2].toLowerCase() == 'd') {
+      _startDate.setDate(_endDate.getDate() - parseInt(_matchDayPeriod[1]));
+    } else if (_matchDayPeriod[2].toLowerCase() == 'h') {
+      _startDate.setHours(_endDate.getHours() - parseInt(_matchDayPeriod[1]));
+    } else if (_matchDayPeriod[2].toLowerCase() == 'm') {
+      _startDate.setMinutes(_endDate.getMinutes() - parseInt(_matchDayPeriod[1]));
+    }
+  } else {
+    _startDate = new Date(Date.parse(startDate));
+    _endDate = endDate ? new Date(endDate) : new Date();
+  }
+
+  const _startTS = _startDate.getTime();
+  const _endTS = _endDate.getTime();
+  console.log('Shelly Pro 3EM device at ', _shellyIP);
+  console.log(
+    'Reading device data from ',
+    new Date(_startTS),
+    'to ',
+    new Date(_endTS),
+    '\n'
+  );
+  let _emDataIteratorResult = null;
+
+  try {
+    await _transport.connect(_shellyIP);
+    const _devInfo = await _testDev.getInfo();
+    const progressBar = new cliProgress.SingleBar(
+      {},
+      cliProgress.Presets.shades_classic
+    );
+    progressBar.start(100, 0);
+
+    const msToS = (ms) => Math.round(ms / 1000);
+    const _resultIterator = _testDev.EMData.getPeriodIterator(
+      msToS(_startTS),
+      msToS(_endTS)
+    );
+
+    let _deviceDataResults = [];
+
+    const _startTimeMs = Date.now();
+    do {
+      _emDataIteratorResult = await _resultIterator.next();
+      if (_emDataIteratorResult.done) {
+        break;
+      }
+
+      _deviceDataResults.push([
+        _emDataIteratorResult.value.ts,
+        ..._emDataIteratorResult.value.record,
+      ]);
+
+      progressBar.update(_emDataIteratorResult.value.percent);
+    } while (_emDataIteratorResult.done == false);
+    const _endTimeMs = Date.now();
+    
+    progressBar.update(100);
+
+    console.log('\n');
+    
+    _outputFileName = _outputFileName || _devInfo.mac + '.log';
+    _outputFileName = _outputFileName.replace('[mac]', _devInfo.mac)
+    console.log('Writing output file', _outputFileName);
+    _deviceDataResults.forEach((value) => {
+      writeFileSync(_outputFileName, value.join(',') + '\n', {
+        flag: 'a+',
+      });
+    });
+
+    console.log('Results of this fetch operation: ');
+    console.log('Device calls: ', _emDataIteratorResult.value.deviceCalls);
+    console.log('Time elapsed in ms: ', _endTimeMs - _startTimeMs);
+    console.log('Number of items: ', _emDataIteratorResult.value.itemsCount);
+    console.log(
+      'Average number of items in a response: ',
+      _emDataIteratorResult.value.averageItemsPerCall
+    );
+  } catch (e) {
+    console.log('Could not fetch data. Check connection to device.', reason);
+    console.log(reason);
+  } finally {
+    console.log('Fetch complete.');
+  }
+}
+
+const cli = new Command('fetch');
+
+cli
+  .argument(
+    '<start-date>',
+    'Start datetime of the period or [1,2,3][d,h,m] e.g. 1d means one day of data, 2h means 2 hours of data, 3m - three minutes'
+  )
+  .argument('[end-date]')
+  .addOption(
+    new Option('--shelly <shelly-ip>', 'Shelly IP address').env('SHELLY')
+  )
+  .option(
+    '-o, --output [filename]',
+    'filename for output, defaults to <device-mac>.log'
+  )
+  .action(fetchData)
+  .addHelpText(
+    'after',
+    `
+Example date format:
+  2022-08-09T14:00:00`
+  );
+
+async function main() {
+  return await cli.showHelpAfterError().parseAsync();
+}
+
+main()
+  .then((_) => {
+    process.exit(0);
+  })
+  .catch((_) => {
+    process.exit(-1);
+  });
+</file>
+
+<file path="bin/fetch2.js">
+#!/usr/bin/env node
+import { Shelly3EM } from '@allterco/shelly/shelly-3em.js';
+import { wsTransport } from '@allterco/transport/websocket.js';
+import { Command, Argument, Option } from 'commander';
+import cliProgress from 'cli-progress';
+import { writeFileSync, unlinkSync } from 'fs'; // Added unlinkSync to potentially clear old files
+
+const debug = process.env.DEBUG || 'none';
+
+async function fetchData(
+  startDate,
+  endDate,
+  { shelly: _shellyIP, output: _outputFileName }
+) {
+  const _transport = new wsTransport();
+  const _testDev = new Shelly3EM(_transport);
+  _transport.setDebug(debug);
+  _testDev.setDebug(debug);
+
+  // Regular expression to match relative time periods (e.g., 5m, 1d, 2h)
+  const _dRegEx = /^(\d+)([dDhHm])$/; // Added ^ and $ for stricter matching
+  const _matchDayPeriod = startDate.match(_dRegEx);
+  let _startDate, _endDate;
+
+  try {
+    // Determine start and end dates based on input format
+    if (_matchDayPeriod) { // FIX: Check if match exists (is not null) instead of length
+      console.log('Detected relative start date:', startDate);
+      _endDate = new Date();
+      _startDate = new Date();
+      const value = parseInt(_matchDayPeriod[1]);
+      const unit = _matchDayPeriod[2].toLowerCase();
+
+      if (unit === 'd') {
+        _startDate.setDate(_endDate.getDate() - value);
+      } else if (unit === 'h') {
+        _startDate.setHours(_endDate.getHours() - value);
+      } else if (unit === 'm') {
+        _startDate.setMinutes(_endDate.getMinutes() - value);
+      } else {
+        // Should not happen with the stricter regex, but good practice
+        throw new Error(`Invalid relative time unit: ${unit}`);
+      }
+    } else {
+      // Assume absolute date format
+      console.log('Parsing absolute start date:', startDate);
+      _startDate = new Date(Date.parse(startDate));
+      // Check if parsing was successful
+      if (isNaN(_startDate.getTime())) {
+          throw new Error(`Invalid start date format: "${startDate}". Use ISO 8601 format (e.g., YYYY-MM-DDTHH:mm:ss) or relative format (e.g., 5m, 1d).`);
+      }
+      _endDate = endDate ? new Date(Date.parse(endDate)) : new Date();
+      if (endDate && isNaN(_endDate.getTime())) {
+          throw new Error(`Invalid end date format: "${endDate}". Use ISO 8601 format.`);
+      }
+    }
+
+    // Ensure start date is before end date
+    if (_startDate >= _endDate) {
+        throw new Error(`Start date (${_startDate.toISOString()}) must be before end date (${_endDate.toISOString()}).`);
+    }
+
+    const _startTS = _startDate.getTime();
+    const _endTS = _endDate.getTime();
+    console.log('Shelly Pro 3EM device at ', _shellyIP);
+    console.log(
+      'Reading device data from ',
+      _startDate.toISOString(), // Use ISO string for clarity
+      'to ',
+      _endDate.toISOString(), // Use ISO string for clarity
+      '\n'
+    );
+    let _emDataIteratorResult = null;
+
+    // Connect to the Shelly device
+    await _transport.connect(_shellyIP);
+    const _devInfo = await _testDev.getInfo();
+
+    // Setup progress bar
+    const progressBar = new cliProgress.SingleBar(
+      {},
+      cliProgress.Presets.shades_classic
+    );
+    console.log('Fetching data...');
+    progressBar.start(100, 0);
+
+    // Helper function to convert milliseconds to seconds
+    const msToS = (ms) => Math.round(ms / 1000);
+
+    // Get the data iterator for the specified period
+    const _resultIterator = _testDev.EMData.getPeriodIterator(
+      msToS(_startTS),
+      msToS(_endTS)
+    );
+
+    let _deviceDataResults = [];
+    const _startTimeMs = Date.now();
+
+    // Iterate through the data results
+    do {
+      _emDataIteratorResult = await _resultIterator.next();
+      if (_emDataIteratorResult.done) {
+        break;
+      }
+
+      // Store the timestamp and data record
+      _deviceDataResults.push([
+        _emDataIteratorResult.value.ts,
+        ..._emDataIteratorResult.value.record,
+      ]);
+
+      // Update progress bar
+      progressBar.update(_emDataIteratorResult.value.percent);
+    } while (_emDataIteratorResult.done == false);
+
+    const _endTimeMs = Date.now();
+    progressBar.update(100); // Ensure progress bar completes
+    progressBar.stop(); // Stop the progress bar
+
+    console.log('\n');
+
+    // Determine output filename
+    _outputFileName = _outputFileName || `${_devInfo.mac}.log`; // Use template literal
+    _outputFileName = _outputFileName.replace('[mac]', _devInfo.mac);
+
+    // Optional: Clear the output file before writing new data
+    try {
+        unlinkSync(_outputFileName);
+        console.log('Cleared existing output file:', _outputFileName);
+    } catch (err) {
+        if (err.code !== 'ENOENT') { // Ignore if file doesn't exist
+            console.warn('Could not clear output file:', err.message);
+        }
+    }
+
+
+    console.log('Writing output file:', _outputFileName);
+    // Write data to the output file
+    _deviceDataResults.forEach((value) => {
+      // Ensure all values are defined before joining (optional safety)
+      const line = value.map(v => v ?? '').join(',');
+      writeFileSync(_outputFileName, line + '\n', {
+        flag: 'a+', // Append mode
+      });
+    });
+
+    console.log('\nResults of this fetch operation:');
+    // Ensure _emDataIteratorResult.value exists before accessing properties
+    if (_emDataIteratorResult && _emDataIteratorResult.value) {
+        console.log('Device calls:', _emDataIteratorResult.value.deviceCalls ?? 'N/A');
+        console.log('Number of items:', _emDataIteratorResult.value.itemsCount ?? 'N/A');
+        console.log(
+          'Average number of items in a response:',
+          _emDataIteratorResult.value.averageItemsPerCall ?? 'N/A'
+        );
+    } else {
+        console.log('No data retrieved or final iterator state unavailable.');
+    }
+    console.log('Time elapsed in ms:', _endTimeMs - _startTimeMs);
+
+
+  } catch (e) {
+    // FIX: Use the caught error object 'e' instead of undefined 'reason'
+    console.error('\nError during fetch operation:');
+    console.error(e.message || e); // Print error message or the whole object
+    if (debug !== 'none' && e.stack) {
+        console.error(e.stack); // Print stack trace if debug is enabled
+    }
+     // Stop progress bar if it was started and an error occurred
+    if (typeof progressBar !== 'undefined' && progressBar.isActive) {
+        progressBar.stop();
+    }
+  } finally {
+    console.log('Fetch process complete.');
+    // Ensure transport is disconnected
+    if (_transport.isConnected()) {
+      console.log('Disconnecting from Shelly device...');
+      await _transport.disconnect();
+    }
+  }
+}
+
+// --- CLI Setup (Commander) ---
+const cli = new Command('fetch');
+
+cli
+  .addArgument(new Argument( // Use Argument class for better definition
+    '<start-date>',
+    'Start datetime (ISO 8601 format like YYYY-MM-DDTHH:mm:ss) or relative period (e.g., 1d, 2h, 3m)'
+  ))
+  .addArgument(new Argument( // Use Argument class
+    '[end-date]',
+    'End datetime (ISO 8601 format). Defaults to now if start-date is absolute.'
+  ).argOptional()) // Mark as optional
+  .addOption(
+    new Option('--shelly <shelly-ip>', 'Shelly device IP address or hostname')
+        .env('SHELLY') // Read from SHELLY environment variable
+        .makeOptionMandatory() // Make Shelly IP mandatory
+  )
+  .option(
+    '-o, --output [filename]',
+    'Output filename. Use "[mac]" placeholder for device MAC. Defaults to "<device-mac>.log".',
+    '[mac].log' // Default value set here
+  )
+  .action(fetchData) // Action handler
+  .addHelpText(
+    'after',
+    `
+Examples:
+  # Fetch last 5 minutes of data from Shelly at 192.168.1.100
+  SHELLY=192.168.1.100 node fetch.js 5m
+
+  # Fetch data from 2025-05-03 01:00:00 to now
+  SHELLY=192.168.1.100 node fetch.js "2025-05-03T01:00:00"
+
+  # Fetch data for a specific period and save to a custom file
+  SHELLY=192.168.1.100 node fetch.js "2025-05-01T00:00:00" "2025-05-02T00:00:00" -o my_shelly_data.csv
+
+  # Fetch last 2 days of data, outputting to <MAC_ADDRESS>.log
+  SHELLY=192.168.1.100 node fetch.js 2d --output "[mac].log"
+`
+  );
+
+// --- Main execution ---
+async function main() {
+  try {
+    await cli.showHelpAfterError().parseAsync(process.argv); // Use process.argv
+  } catch (error) {
+      // Commander might throw errors for invalid options/args before the action is called
+      console.error("CLI Error:", error.message);
+      process.exit(1); // Exit with error code
+  }
+}
+
+// Run main and handle exit codes
+main()
+  .then(() => {
+    // process.exit(0); // Let Node exit naturally unless there was an error
+  })
+  .catch((err) => {
+    // Catch any unhandled promise rejections from main/fetchData
+    console.error("Unhandled error:", err);
+    process.exit(1); // Exit with error code
+  });
+</file>
+
+<file path="bin/fetch3.js">
+#!/usr/bin/env node
+import { Shelly3EM } from '@allterco/shelly/shelly-3em.js';
+import { wsTransport } from '@allterco/transport/websocket.js';
+import { Command, Argument, Option } from 'commander';
+import cliProgress from 'cli-progress';
+import { writeFileSync, unlinkSync } from 'fs'; // Added unlinkSync to potentially clear old files
+
+const debug = process.env.DEBUG || 'none';
+
+async function fetchData(
+  startDate,
+  endDate,
+  { shelly: _shellyIP, output: _outputFileName }
+) {
+  // Initialize transport and device objects
+  const _transport = new wsTransport();
+  const _testDev = new Shelly3EM(_transport);
+  _transport.setDebug(debug);
+  _testDev.setDebug(debug);
+
+  // Declare progressBar variable here so it's accessible in finally block if needed
+  let progressBar;
+  let connected = false; // Flag to track connection status
+
+  // Regular expression to match relative time periods (e.g., 5m, 1d, 2h)
+  const _dRegEx = /^(\d+)([dDhHm])$/; // Added ^ and $ for stricter matching
+  const _matchDayPeriod = startDate.match(_dRegEx);
+  let _startDate, _endDate;
+
+  try {
+    // --- Date Parsing ---
+    // Determine start and end dates based on input format
+    if (_matchDayPeriod) { // Check if match exists (is not null)
+      console.log('Detected relative start date:', startDate);
+      _endDate = new Date();
+      _startDate = new Date();
+      const value = parseInt(_matchDayPeriod[1]);
+      const unit = _matchDayPeriod[2].toLowerCase();
+
+      if (unit === 'd') {
+        _startDate.setDate(_endDate.getDate() - value);
+      } else if (unit === 'h') {
+        _startDate.setHours(_endDate.getHours() - value);
+      } else if (unit === 'm') {
+        _startDate.setMinutes(_endDate.getMinutes() - value);
+      } else {
+        // Should not happen with the stricter regex
+        throw new Error(`Invalid relative time unit: ${unit}`);
+      }
+    } else {
+      // Assume absolute date format
+      console.log('Parsing absolute start date:', startDate);
+      _startDate = new Date(Date.parse(startDate));
+      // Check if parsing was successful
+      if (isNaN(_startDate.getTime())) {
+          throw new Error(`Invalid start date format: "${startDate}". Use ISO 8601 format (e.g., YYYY-MM-DDTHH:mm:ss) or relative format (e.g., 5m, 1d).`);
+      }
+      // Determine end date: use provided endDate or default to now
+      _endDate = endDate ? new Date(Date.parse(endDate)) : new Date();
+      if (endDate && isNaN(_endDate.getTime())) {
+          throw new Error(`Invalid end date format: "${endDate}". Use ISO 8601 format.`);
+      }
+    }
+
+    // Validate date range
+    if (_startDate >= _endDate) {
+        throw new Error(`Start date (${_startDate.toISOString()}) must be before end date (${_endDate.toISOString()}).`);
+    }
+
+    const _startTS = _startDate.getTime();
+    const _endTS = _endDate.getTime();
+    console.log('Shelly Pro 3EM device at ', _shellyIP);
+    console.log(
+      'Reading device data from ',
+      _startDate.toISOString(), // Use ISO string for clarity
+      'to ',
+      _endDate.toISOString(), // Use ISO string for clarity
+      '\n'
+    );
+    let _emDataIteratorResult = null;
+
+    // --- Data Fetching ---
+    // Connect to the Shelly device
+    console.log('Connecting to Shelly device...');
+    await _transport.connect(_shellyIP);
+    connected = true; // Mark as connected
+    console.log('Connected.');
+    const _devInfo = await _testDev.getInfo();
+    console.log(`Device Info: MAC=${_devInfo.mac}, Model=${_devInfo.model}, FW=${_devInfo.fw_id}`);
+
+
+    // Setup progress bar
+    progressBar = new cliProgress.SingleBar( // Assign to the outer scope variable
+      {},
+      cliProgress.Presets.shades_classic
+    );
+    console.log('Fetching data...');
+    progressBar.start(100, 0);
+
+    // Helper function to convert milliseconds to seconds
+    const msToS = (ms) => Math.round(ms / 1000);
+
+    // Get the data iterator for the specified period
+    const _resultIterator = _testDev.EMData.getPeriodIterator(
+      msToS(_startTS),
+      msToS(_endTS)
+    );
+
+    let _deviceDataResults = [];
+    const _startTimeMs = Date.now();
+
+    // Iterate through the data results
+    do {
+      _emDataIteratorResult = await _resultIterator.next();
+      if (_emDataIteratorResult.done) {
+        break;
+      }
+
+      // Store the timestamp and data record
+      _deviceDataResults.push([
+        _emDataIteratorResult.value.ts,
+        ..._emDataIteratorResult.value.record,
+      ]);
+
+      // Update progress bar
+      progressBar.update(_emDataIteratorResult.value.percent);
+    } while (_emDataIteratorResult.done == false);
+
+    const _endTimeMs = Date.now();
+    progressBar.update(100); // Ensure progress bar completes
+    progressBar.stop(); // Stop the progress bar
+
+    console.log('\n');
+
+    // --- File Output ---
+    // Determine output filename
+    _outputFileName = _outputFileName || `${_devInfo.mac}.log`; // Use template literal
+    _outputFileName = _outputFileName.replace('[mac]', _devInfo.mac);
+
+    // Optional: Clear the output file before writing new data
+    try {
+        unlinkSync(_outputFileName);
+        console.log('Cleared existing output file:', _outputFileName);
+    } catch (err) {
+        if (err.code !== 'ENOENT') { // Ignore if file doesn't exist
+            console.warn('Could not clear output file:', err.message);
+        } else {
+             console.log('Output file does not exist, creating new one:', _outputFileName);
+        }
+    }
+
+    console.log('Writing data to output file:', _outputFileName);
+    // Write data to the output file
+    _deviceDataResults.forEach((value) => {
+      // Ensure all values are defined before joining (optional safety)
+      const line = value.map(v => v ?? '').join(',');
+      writeFileSync(_outputFileName, line + '\n', {
+        flag: 'a+', // Append mode
+      });
+    });
+    console.log(`Successfully wrote ${_deviceDataResults.length} records.`);
+
+    // --- Results Summary ---
+    console.log('\nResults of this fetch operation:');
+    // Ensure _emDataIteratorResult.value exists before accessing properties
+    if (_emDataIteratorResult && _emDataIteratorResult.value) {
+        console.log('Device calls:', _emDataIteratorResult.value.deviceCalls ?? 'N/A');
+        console.log('Number of items:', _emDataIteratorResult.value.itemsCount ?? 'N/A');
+        console.log(
+          'Average number of items in a response:',
+          _emDataIteratorResult.value.averageItemsPerCall?.toFixed(2) ?? 'N/A' // Added rounding
+        );
+    } else if (_deviceDataResults.length === 0) {
+         console.log('No data records found for the specified period.');
+    }
+     else {
+        console.log('Final iterator state unavailable, but data was likely retrieved.');
+    }
+    console.log('Time elapsed in ms:', _endTimeMs - _startTimeMs);
+
+
+  } catch (e) {
+    // --- Error Handling ---
+    console.error('\n--- ERROR ---');
+    console.error('An error occurred during the fetch operation:');
+    console.error(e.message || e); // Print error message or the whole object
+    if (debug !== 'none' && e.stack) {
+        console.error('Stack Trace:', e.stack); // Print stack trace if debug is enabled
+    }
+     // Stop progress bar if it was started and an error occurred
+    if (progressBar && progressBar.isActive) { // Check if progressBar exists and is active
+        progressBar.stop();
+        console.error("Progress bar stopped due to error.");
+    }
+    // Set exit code to indicate failure
+    process.exitCode = 1;
+
+  } finally {
+    // --- Cleanup ---
+    console.log('\nFetch process cleanup...');
+    // Ensure transport is disconnected ONLY if it was successfully connected
+    if (connected) { // Use the flag we set after successful connection
+      try {
+          console.log('Disconnecting from Shelly device...');
+          await _transport.disconnect(); // FIX: Removed the isConnected() check
+          console.log('Disconnected.');
+      } catch (disconnectError) {
+          console.error('Error during disconnection:', disconnectError.message || disconnectError);
+           if (debug !== 'none' && disconnectError.stack) {
+               console.error('Disconnect Stack Trace:', disconnectError.stack);
+           }
+           // Potentially set exit code here too if disconnect failure is critical
+           if (!process.exitCode) process.exitCode = 1;
+      }
+    } else {
+        console.log('No active connection to disconnect.');
+    }
+     console.log('Cleanup complete.');
+  }
+}
+
+// --- CLI Setup (Commander) ---
+const cli = new Command('fetch');
+
+cli
+  .addArgument(new Argument( // Use Argument class for better definition
+    '<start-date>',
+    'Start datetime (ISO 8601 format like YYYY-MM-DDTHH:mm:ss) or relative period (e.g., 1d, 2h, 3m)'
+  ))
+  .addArgument(new Argument( // Use Argument class
+    '[end-date]',
+    'End datetime (ISO 8601 format). Defaults to now if start-date is absolute.'
+  ).argOptional()) // Mark as optional
+  .addOption(
+    new Option('--shelly <shelly-ip>', 'Shelly device IP address or hostname')
+        .env('SHELLY') // Read from SHELLY environment variable
+        .makeOptionMandatory() // Make Shelly IP mandatory
+  )
+  .option(
+    '-o, --output [filename]',
+    'Output filename. Use "[mac]" placeholder for device MAC. Defaults to "<device-mac>.log".',
+    '[mac].log' // Default value set here
+  )
+  .action(fetchData) // Action handler
+  .addHelpText(
+    'after',
+    `
+Examples:
+  # Fetch last 5 minutes of data from Shelly at 192.168.1.100
+  SHELLY=192.168.1.100 node fetch.js 5m
+
+  # Fetch data from 2025-05-03 01:00:00 to now
+  SHELLY=192.168.1.100 node fetch.js "2025-05-03T01:00:00"
+
+  # Fetch data for a specific period and save to a custom file
+  SHELLY=192.168.1.100 node fetch.js "2025-05-01T00:00:00" "2025-05-02T00:00:00" -o my_shelly_data.csv
+
+  # Fetch last 2 days of data, outputting to <MAC_ADDRESS>.log
+  SHELLY=192.168.1.100 node fetch.js 2d --output "[mac].log"
+`
+  );
+
+// --- Main execution ---
+async function main() {
+  try {
+    // Parse command line arguments using process.argv
+    await cli.showHelpAfterError().parseAsync(process.argv);
+    console.log(`Script finished with exit code ${process.exitCode || 0}.`);
+  } catch (error) {
+      // Catch errors during argument parsing (e.g., missing mandatory options)
+      // Commander typically prints its own errors, but we catch to ensure proper exit
+      console.error("CLI Parsing Error:", error.message);
+      process.exitCode = 1; // Set exit code for CLI errors
+  }
+}
+
+// Run main and handle exit codes based on process.exitCode
+main()
+  .then(() => {
+    // process.exitCode will be set by fetchData on error, or remain undefined (0) on success
+    process.exit(process.exitCode || 0); // Exit with the appropriate code
+  })
+  .catch((err) => {
+    // Catch any unexpected unhandled promise rejections from main/fetchData
+    console.error("--- UNHANDLED ERROR ---");
+    console.error("An unexpected error occurred:", err.message || err);
+     if (err.stack) {
+        console.error('Stack Trace:', err.stack);
+    }
+    process.exit(1); // Exit with error code 1 for unhandled errors
+  });
+</file>
+
+<file path="bin/fetch4.js">
+#!/usr/bin/env node
+import { Shelly3EM } from '@allterco/shelly/shelly-3em.js';
+import { wsTransport } from '@allterco/transport/websocket.js'; // Assuming this path is correct relative to the script
+import { Command, Argument, Option } from 'commander';
+import cliProgress from 'cli-progress';
+import { writeFileSync, unlinkSync } from 'fs';
+
+const debug = process.env.DEBUG || 'none';
+
+async function fetchData(
+  startDate,
+  endDate,
+  { shelly: _shellyIP, output: _outputFileName }
+) {
+  // Initialize transport and device objects
+  const _transport = new wsTransport(); // Uses the provided class definition
+  const _testDev = new Shelly3EM(_transport);
+  _transport.setDebug(debug);
+  _testDev.setDebug(debug);
+
+  // Declare progressBar variable here so it's accessible in finally block if needed
+  let progressBar;
+  let connected = false; // Flag to track connection status
+
+  // Regular expression to match relative time periods (e.g., 5m, 1d, 2h)
+  const _dRegEx = /^(\d+)([dDhHm])$/; // Added ^ and $ for stricter matching
+  const _matchDayPeriod = startDate.match(_dRegEx);
+  let _startDate, _endDate;
+
+  try {
+    // --- Date Parsing ---
+    // Determine start and end dates based on input format
+    if (_matchDayPeriod) { // Check if match exists (is not null)
+      console.log('Detected relative start date:', startDate);
+      _endDate = new Date();
+      _startDate = new Date();
+      const value = parseInt(_matchDayPeriod[1]);
+      const unit = _matchDayPeriod[2].toLowerCase();
+
+      if (unit === 'd') {
+        _startDate.setDate(_endDate.getDate() - value);
+      } else if (unit === 'h') {
+        _startDate.setHours(_endDate.getHours() - value);
+      } else if (unit === 'm') {
+        _startDate.setMinutes(_endDate.getMinutes() - value);
+      } else {
+        // Should not happen with the stricter regex
+        throw new Error(`Invalid relative time unit: ${unit}`);
+      }
+    } else {
+      // Assume absolute date format
+      console.log('Parsing absolute start date:', startDate);
+      _startDate = new Date(Date.parse(startDate));
+      // Check if parsing was successful
+      if (isNaN(_startDate.getTime())) {
+          throw new Error(`Invalid start date format: "${startDate}". Use ISO 8601 format (e.g., YYYY-MM-DDTHH:mm:ss) or relative format (e.g., 5m, 1d).`);
+      }
+      // Determine end date: use provided endDate or default to now
+      _endDate = endDate ? new Date(Date.parse(endDate)) : new Date();
+      if (endDate && isNaN(_endDate.getTime())) {
+          throw new Error(`Invalid end date format: "${endDate}". Use ISO 8601 format.`);
+      }
+    }
+
+    // Validate date range
+    if (_startDate >= _endDate) {
+        throw new Error(`Start date (${_startDate.toISOString()}) must be before end date (${_endDate.toISOString()}).`);
+    }
+
+    const _startTS = _startDate.getTime();
+    const _endTS = _endDate.getTime();
+    console.log('Shelly Pro 3EM device at ', _shellyIP);
+    console.log(
+      'Reading device data from ',
+      _startDate.toISOString(), // Use ISO string for clarity
+      'to ',
+      _endDate.toISOString(), // Use ISO string for clarity
+      '\n'
+    );
+    let _emDataIteratorResult = null;
+
+    // --- Data Fetching ---
+    // Connect to the Shelly device
+    console.log('Connecting to Shelly device...');
+    await _transport.connect(_shellyIP);
+    // Use the 'connected' property from wsTransport instance after connect resolves
+    connected = _transport.connected;
+    if (!connected) {
+        // Although connect should throw on failure, double-check
+        throw new Error('Transport failed to connect, but did not throw an error.');
+    }
+    console.log('Connected.');
+    const _devInfo = await _testDev.getInfo();
+    console.log(`Device Info: MAC=${_devInfo.mac}, Model=${_devInfo.model}, FW=${_devInfo.fw_id}`);
+
+
+    // Setup progress bar
+    progressBar = new cliProgress.SingleBar( // Assign to the outer scope variable
+      {},
+      cliProgress.Presets.shades_classic
+    );
+    console.log('Fetching data...');
+    progressBar.start(100, 0);
+
+    // Helper function to convert milliseconds to seconds
+    const msToS = (ms) => Math.round(ms / 1000);
+
+    // Get the data iterator for the specified period
+    const _resultIterator = _testDev.EMData.getPeriodIterator(
+      msToS(_startTS),
+      msToS(_endTS)
+    );
+
+    let _deviceDataResults = [];
+    const _startTimeMs = Date.now();
+
+    // Iterate through the data results
+    do {
+      _emDataIteratorResult = await _resultIterator.next();
+      if (_emDataIteratorResult.done) {
+        break;
+      }
+
+      // Store the timestamp and data record
+      _deviceDataResults.push([
+        _emDataIteratorResult.value.ts,
+        ..._emDataIteratorResult.value.record,
+      ]);
+
+      // Update progress bar
+      progressBar.update(_emDataIteratorResult.value.percent);
+    } while (_emDataIteratorResult.done == false);
+
+    const _endTimeMs = Date.now();
+    progressBar.update(100); // Ensure progress bar completes
+    progressBar.stop(); // Stop the progress bar
+
+    console.log('\n');
+
+    // --- File Output ---
+    // Determine output filename
+    _outputFileName = _outputFileName || `${_devInfo.mac}.log`; // Use template literal
+    _outputFileName = _outputFileName.replace('[mac]', _devInfo.mac);
+
+    // Optional: Clear the output file before writing new data
+    try {
+        unlinkSync(_outputFileName);
+        console.log('Cleared existing output file:', _outputFileName);
+    } catch (err) {
+        if (err.code !== 'ENOENT') { // Ignore if file doesn't exist
+            console.warn('Could not clear output file:', err.message);
+        } else {
+             console.log('Output file does not exist, creating new one:', _outputFileName);
+        }
+    }
+
+    console.log('Writing data to output file:', _outputFileName);
+    // Write data to the output file
+    _deviceDataResults.forEach((value) => {
+      // Ensure all values are defined before joining (optional safety)
+      const line = value.map(v => v ?? '').join(',');
+      writeFileSync(_outputFileName, line + '\n', {
+        flag: 'a+', // Append mode
+      });
+    });
+    console.log(`Successfully wrote ${_deviceDataResults.length} records.`);
+
+    // --- Results Summary ---
+    console.log('\nResults of this fetch operation:');
+    // Ensure _emDataIteratorResult.value exists before accessing properties
+    if (_emDataIteratorResult && _emDataIteratorResult.value) {
+        console.log('Device calls:', _emDataIteratorResult.value.deviceCalls ?? 'N/A');
+        console.log('Number of items:', _emDataIteratorResult.value.itemsCount ?? 'N/A');
+        console.log(
+          'Average number of items in a response:',
+          _emDataIteratorResult.value.averageItemsPerCall?.toFixed(2) ?? 'N/A' // Added rounding
+        );
+    } else if (_deviceDataResults.length === 0) {
+         console.log('No data records found for the specified period.');
+    }
+     else {
+        console.log('Final iterator state unavailable, but data was likely retrieved.');
+    }
+    console.log('Time elapsed in ms:', _endTimeMs - _startTimeMs);
+
+
+  } catch (e) {
+    // --- Error Handling ---
+    console.error('\n--- ERROR ---');
+    console.error('An error occurred during the fetch operation:');
+    console.error(e.message || e); // Print error message or the whole object
+    if (debug !== 'none' && e.stack) {
+        console.error('Stack Trace:', e.stack); // Print stack trace if debug is enabled
+    }
+     // Stop progress bar if it was started and an error occurred
+    if (progressBar && progressBar.isActive) { // Check if progressBar exists and is active
+        progressBar.stop();
+        console.error("Progress bar stopped due to error.");
+    }
+    // Set exit code to indicate failure
+    process.exitCode = 1;
+
+  } finally {
+    // --- Cleanup ---
+    console.log('\nFetch process cleanup...');
+    // Use the 'connected' property which reflects the state after trying to connect.
+    // Call the correct close() method if the transport might be connected.
+    // The 'connected' flag might be true even if connect() failed mid-way,
+    // so checking _transport._ws might be slightly safer, but we'll rely on the flag for now.
+    if (_transport.connected) { // Check the property from the wsTransport instance
+        try {
+            console.log('Closing Shelly device connection...');
+            _transport.close(); // FIX: Call the correct close() method
+            console.log('Connection closed.');
+        } catch (closeError) {
+            // Log error during close, but don't necessarily overwrite exit code unless critical
+             console.error('Error during connection close:', closeError.message || closeError);
+             if (debug !== 'none' && closeError.stack) {
+               console.error('Close Stack Trace:', closeError.stack);
+             }
+             // Decide if close error should cause script failure
+             // if (!process.exitCode) process.exitCode = 1;
+        }
+    } else {
+        console.log('No active connection to close or connection failed.');
+    }
+     console.log('Cleanup complete.');
+  }
+}
+
+// --- CLI Setup (Commander) ---
+const cli = new Command('fetch');
+
+cli
+  .addArgument(new Argument( // Use Argument class for better definition
+    '<start-date>',
+    'Start datetime (ISO 8601 format like YYYY-MM-DDTHH:mm:ss) or relative period (e.g., 1d, 2h, 3m)'
+  ))
+  .addArgument(new Argument( // Use Argument class
+    '[end-date]',
+    'End datetime (ISO 8601 format). Defaults to now if start-date is absolute.'
+  ).argOptional()) // Mark as optional
+  .addOption(
+    new Option('--shelly <shelly-ip>', 'Shelly device IP address or hostname')
+        .env('SHELLY') // Read from SHELLY environment variable
+        .makeOptionMandatory() // Make Shelly IP mandatory
+  )
+  .option(
+    '-o, --output [filename]',
+    'Output filename. Use "[mac]" placeholder for device MAC. Defaults to "<device-mac>.log".',
+    '[mac].log' // Default value set here
+  )
+  .action(fetchData) // Action handler
+  .addHelpText(
+    'after',
+    `
+Examples:
+  # Fetch last 5 minutes of data from Shelly at 192.168.1.100
+  SHELLY=192.168.1.100 node fetch.js 5m
+
+  # Fetch data from 2025-05-03 01:00:00 to now
+  SHELLY=192.168.1.100 node fetch.js "2025-05-03T01:00:00"
+
+  # Fetch data for a specific period and save to a custom file
+  SHELLY=192.168.1.100 node fetch.js "2025-05-01T00:00:00" "2025-05-02T00:00:00" -o my_shelly_data.csv
+
+  # Fetch last 2 days of data, outputting to <MAC_ADDRESS>.log
+  SHELLY=192.168.1.100 node fetch.js 2d --output "[mac].log"
+`
+  );
+
+// --- Main execution ---
+async function main() {
+  try {
+    // Parse command line arguments using process.argv
+    await cli.showHelpAfterError().parseAsync(process.argv);
+    console.log(`Script finished with exit code ${process.exitCode || 0}.`);
+  } catch (error) {
+      // Catch errors during argument parsing (e.g., missing mandatory options)
+      // Commander typically prints its own errors, but we catch to ensure proper exit
+      console.error("CLI Parsing Error:", error.message);
+      process.exitCode = 1; // Set exit code for CLI errors
+  }
+}
+
+// Run main and handle exit codes based on process.exitCode
+main()
+  .then(() => {
+    // process.exitCode will be set by fetchData on error, or remain undefined (0) on success
+    process.exit(process.exitCode || 0); // Exit with the appropriate code
+  })
+  .catch((err) => {
+    // Catch any unexpected unhandled promise rejections from main/fetchData
+    console.error("--- UNHANDLED ERROR ---");
+    console.error("An unexpected error occurred:", err.message || err);
+     if (err.stack) {
+        console.error('Stack Trace:', err.stack);
+    }
+    process.exit(1); // Exit with error code 1 for unhandled errors
+  });
+</file>
+
+<file path="bin/freemem.sh">
+#!/bin/sh
+
+if [ $# -eq 0 ]
+  then
+    echo "Provide Shelly IP as argument"
+    exit 1;
+fi
+
+SHELLY=${1}
+JQUERY="import \"./bin/duration\" as dur; \"uptime \" + (.result.sys.uptime | dur::duration(2)) + \" free mem \" + (.result.sys.ram_free | tostring)"
+
+while :;
+do 
+    curl -s -X POST -d '{"id":1,"method":"shelly.getstatus"}' http://${SHELLY}/rpc | jq -L . "${JQUERY}"; sleep 0.5; 
+done
+</file>
+
+<file path="bin/gainsToCSV.sh">
+#!/bin/bash
+#Create CSV file with ADE7880 gain values from saved Shelly config JSONs
+#Run against a directory with reference gains
+
+logpath="${1}/*-gains-*.json"
+gainscsv="${1}/gains.csv"
+CNT=0
+for f in $logpath; do
+    if [ "$CNT" -eq "0" ]; then
+      echo -n "MAC," >> $gainscsv;
+      cat $f | jq -r 'keys_unsorted | join(",")' >> $gainscsv
+    fi
+    DEVMAC=$(echo $f | sed -E 's/.*([0-9,A-F]{12}).*/\1/')
+    echo -n "${DEVMAC}," >> $gainscsv
+    cat $f | jq -r 'values | join(",")' >> $gainscsv
+    ((CNT+=1))
+done
+</file>
+
+<file path="bin/read.js">
+#!/usr/bin/env node
+import { readFileSync } from 'fs';
+import { Command, Option } from 'commander';
+import { Shelly3EM } from '@allterco/shelly/shelly-3em.js';
+import { wsTransport } from '@allterco/transport/websocket.js';
+import { mapToFile } from '../src/utils.js';
+import {
+  measurementFromDeviceEMStatus,
+  measurementFromReferenceValues,
+  mergeMeasurements,
+} from '../src/model.js';
+
+const DEBUG = process.env.DEBUG || 'none';
+
+const _wait = async (_ms) => new Promise((resolve) => setTimeout(resolve, _ms));
+
+async function read({ shelly: _shellyIP, output: _outputFileName }) {
+  console.log('Shelly Pro 3EM device at ', _shellyIP);
+  const _transport = new wsTransport();
+  const _testDev = new Shelly3EM(_transport);
+  _transport.setDebug(DEBUG);
+  _testDev.setDebug(DEBUG);
+
+  try {
+    await _transport.connect(_shellyIP);
+    const _status = await _testDev.EM.getStatus();
+    const _measurement = measurementFromDeviceEMStatus(_status.response);
+    const _resultMap = new Map([
+      ['mac', _testDev.info.mac],
+      ...Object.entries(_measurement),
+    ]);
+    console.table(_resultMap);
+    if (_outputFileName) {
+      mapToFile(_resultMap, _outputFileName);
+      console.log('Readings written to', _outputFileName);
+    }
+  } catch (e) {
+    console.error('Device read error', e);
+    throw e;
+  }
+}
+
+async function compare({
+  etalon: _etalonShellyIP,
+  shelly: _shellyIP,
+  output: _outputFileName,
+  etype: _etalonType,
+}) {
+  const _transport = new wsTransport();
+  const _testDev = new Shelly3EM(_transport);
+  const _etalonTransport = new wsTransport();
+  let _etalonDev;
+  _etalonDev = new Shelly3EM(_etalonTransport);
+  _etalonDev.getCalStatus = _etalonDev.EM.getStatus;
+  _transport.setDebug(DEBUG);
+  _testDev.setDebug(DEBUG);
+  _etalonDev.setDebug(DEBUG);
+
+  try {
+    let _status;
+    await _transport.connect(_shellyIP);
+    const _testDevMac = await _testDev.getInfo().mac;
+    _status = await _testDev.EM.getStatus();
+    const _measurementFromTestDevice = measurementFromDeviceEMStatus(
+      _status.response
+    );
+    await _etalonTransport.connect(_etalonShellyIP);
+    const _etalonDevMac = await _etalonDev.getInfo().mac;
+    _status = await _etalonDev.getCalStatus();
+    if (typeof _status.response == 'undefnined') {
+      throw new Error('Invalid etalon reading');
+    }
+    const _measurementFromEtalonDevice = measurementFromDeviceEMStatus(
+      _status.response
+    );
+
+    let _mm = mergeMeasurements(
+      _measurementFromEtalonDevice,
+      _measurementFromTestDevice,
+      (a, b) => Math.round(((b - a) / a) * 10000) / 100,
+      ['Reference', 'Device', 'Diff %']
+    );
+    console.table(_mm);
+
+    if (_outputFileName) {
+      const _testResultMap = new Map([
+        ['mac', _testDevMac],
+        ...Object.entries(_measurementFromTestDevice),
+      ]);
+      const _etalonResultMap = new Map([
+        ['mac', _etalonDevMac],
+        ...Object.entries(_measurementFromEtalonDevice),
+      ]);
+      mapToFile(_testResultMap, _outputFileName);
+      mapToFile(_etalonResultMap, _outputFileName);
+      console.log('Readings written to', _outputFileName);
+    }
+  } catch (e) {
+    console.error('Device read error', e);
+    throw e;
+  }
+}
+
+async function compareRefValue({
+  etalon: _etalonFileName,
+  shelly: _shellyIP,
+  output: _outputFileName,
+}) {
+  const _transport = new wsTransport();
+  const _testDev = new Shelly3EM(_transport);
+
+  _transport.setDebug(DEBUG);
+  _testDev.setDebug(DEBUG);
+
+  try {
+    const _referenceValues = JSON.parse(readFileSync(_etalonFileName));
+    const _measurementFromEtalonDevice =
+      measurementFromReferenceValues(_referenceValues);
+
+    let _status;
+    await _transport.connect(_shellyIP);
+    const _devInfo = await _testDev.getInfo();
+    const _testDevMac = _devInfo.mac;
+    _status = await _testDev.EM.getStatus();
+    const _measurementFromTestDevice = measurementFromDeviceEMStatus(
+      _status.response
+    );
+
+    let _mm = mergeMeasurements(
+      _measurementFromEtalonDevice,
+      _measurementFromTestDevice,
+      (a, b) => Math.round((Math.abs(a - b) / a) * 10000) / 100,
+      ['Reference', 'Device', 'Diff %']
+    );
+    console.table(_mm);
+    if (_outputFileName) {
+      const _testResultMap = new Map([
+        ['mac', _testDevMac],
+        ...Object.entries(_measurementFromTestDevice),
+      ]);
+      const _etalonResultMap = new Map([
+        ['file', _etalonFileName],
+        ...Object.entries(_measurementFromEtalonDevice),
+      ]);
+      mapToFile(_testResultMap, _outputFileName);
+      mapToFile(_etalonResultMap, _outputFileName);
+      console.log('Readings written to', _outputFileName);
+    }
+  } catch (e) {
+    console.error('Device read error', e);
+    throw e;
+  }
+}
+
+class ShellyCommand extends Command {
+  createCommand(name) {
+    const _command = new Command(name);
+    _command.addOption(
+      new Option('--shelly <shelly-ip>', 'Shelly IP address').env('SHELLY')
+    );
+    _command.addOption(
+      new Option('-o --output [output-file]', 'File to output results to').env(
+        'OUTPUT'
+      )
+    );
+    return _command;
+  }
+}
+
+const cli = new ShellyCommand('read');
+
+cli.command('read').description('Read device data').action(read);
+
+cli
+  .command('compare')
+  .description('Compare two Shelly device readings')
+  .addOption(
+    new Option('-e --etalon <etalon-ip>', 'Etalon IP address').env('ETALON')
+  )
+  .action(compare);
+
+cli
+  .command('compareref')
+  .description('Compare device vs reference values')
+  .addOption(
+    new Option(
+      '-e --etalon <etalon-file-name>',
+      'File with etalon references'
+    ).env('ETALON')
+  )
+  .action(compareRefValue);
+
+async function main() {
+  return await cli.showHelpAfterError().parseAsync();
+}
+
+main()
+  .then((_) => {
+    process.exit(0);
+  })
+  .catch((_) => {
+    process.exit(-1);
+  });
+</file>
+
+<file path="config/refs-10000w-1pf.json">
+{
+  "voltage": 230,
+  "current": 43.478260869565217,
+  "apower": 10000,
+  "aprtpower": 10000,
+  "pf": 1,
+  "frequency": 50
+}
+</file>
+
+<file path="config/refs-1000w-1pf.json">
+{
+  "voltage": 230,
+  "current": 4.3478260869565217,
+  "apower": 1000,
+  "aprtpower": 1000,
+  "pf": 1,
+  "frequency": 50
+}
+</file>
+
+<file path="config/refs-100w-1pf.json">
+{
+  "voltage": 230,
+  "current": 0.43478260869565217,
+  "apower": 100,
+  "aprtpower": 100,
+  "pf": 1,
+  "frequency": 50
+}
+</file>
+
+<file path="config/refs-200w-05pf.json">
+{
+  "voltage": 230,
+  "current": 1.30,
+  "apower": 200,
+  "aprtpower": 300,
+  "pf": 0.5,
+  "frequency": 50
+}
+</file>
+
+<file path="config/refs-200w-1pf.json">
+{
+  "voltage": 230,
+  "current": 0.869565217391304,
+  "apower": 200,
+  "aprtpower": 200,
+  "pf": 1,
+  "frequency": 50
+}
+</file>
+
+<file path="config/refs-2300w-1pf.json">
+{
+  "voltage": 230,
+  "current": 10,
+  "apower": 2300,
+  "aprtpower": 2300,
+  "pf": 1,
+  "frequency": 50
+}
+</file>
+
+<file path="config/refs-300w-1pf.json">
+{
+  "voltage": 230,
+  "current": 1.30784,
+  "apower": 300,
+  "aprtpower": 300,
+  "pf": 1,
+  "frequency": 50
+}
+</file>
+
+<file path="config/refs-500w-1pf.json">
+{
+  "voltage": 230,
+  "current": 2.17391,
+  "apower": 500,
+  "aprtpower": 500,
+  "pf": 1,
+  "frequency": 50
+}
+</file>
+
+<file path="config/refs-50w-1pf.json">
+{
+  "voltage": 230,
+  "current": 0.217391304347826,
+  "apower": 50,
+  "aprtpower": 50,
+  "pf": 1,
+  "frequency": 50
+}
+</file>
+
+<file path="config/refs-9200w-1pf.json">
+{
+  "voltage": 230,
+  "current": 40,
+  "apower": 9200,
+  "aprtpower": 9200,
+  "pf": 1,
+  "frequency": 50
+}
+</file>
+
+<file path="env/.env">
+SHELLY=192.168.3.44
+TRANSPORT=ws
+</file>
+
+<file path="packages/equipment/it8615.js">
+import { Socket } from 'net';
+
+const IT8615Control = {
+  local: 0,
+  remote: 1,
+};
+class IT8615 {
+  socket = null;
+  resp = null;
+  lastReadout = {};
+  control = 'local';
+  constructor() {
+    this.socket = new Socket();
+    this.socket.on('data', this.onData.bind(this));
+  }
+  async connect(host, port = 30000, timeout = 1000) {
+    if(!host) throw new Error('Provide an address for IT8615');
+    console.log('Connecting to IT8615 at ' + host + ':' + port);
+    const _this = this;
+    return new Promise((resolve, reject) => {
+      this.socket.setTimeout(timeout);
+      this.socket.on('connect', () => {
+        this.socket.removeAllListeners('error');
+        clearTimeout(_connectTimeout);
+        resolve(_this);
+      });
+      this.socket.on('error', () => {
+        reject('Error on socket');
+      });
+      const _connectTimeout = setTimeout(() => {
+        reject('Socket timeout');
+      }, timeout);
+      this.socket.connect({ port, host });
+    });
+  }
+  close() {
+    this.socket.removeAllListeners('connect');
+    this.socket.removeAllListeners('error');
+    this.socket.destroy();
+  }
+  write(msg) {
+    this.socket.write(msg + '\n');
+  }
+  onData(chunk) {
+    if (this.resp) {
+      const received = chunk.toString().trim();
+      this.resp(received);
+      this.resp = null;
+    }
+  }
+  deviceRead(msg) {
+    return new Promise((resolve) => {
+      this.resp = resolve;
+      this.write(msg);
+    });
+  }
+  deviceRemoteControl() {
+    this.write('system:remote');
+    this.control = IT8615Control.remote;
+  }
+  deviceLocalControl() {
+    this.write('system:local');
+    this.control = IT8615Control.local;
+  }
+  async setPower(power = null) {
+    if (power == null) return;
+    this.write('power ' + power);
+    return this.deviceRead('power?');
+  }
+  async setOutput(output = false) {
+    const _on = output ? '1' : '0';
+    this.write('input:state ' + _on);
+    return this.deviceRead('input:state?');
+  }
+  async setPF(PF = 1) {
+    this.write('pfactor ' + PF);
+    return this.deviceRead('pfactor?');
+  }
+  //pf, cf
+  async setPFPriority(pfPriority='pf') {
+    this.write('system:cfpf:priority '+pfPriority);
+    return this.deviceRead('system:cfpf:priority?')
+  }
+  async getMeasure() {
+    const measurementsRaw = await this.deviceRead('Measure?');
+    let mappedMeasurements = measurementsRaw.split(',');
+    mappedMeasurements.pop();
+    const _map = [
+      'Current_DC',
+      'Current_RMS',
+      'Current_Max',
+      'Current_Max_PP', //positive peak max current
+      'Current_Max_NP', //negative peak max current
+      'Voltage_DC',
+      'Voltage_RMS',
+      'Voltage_Max',
+      'Power_Active',
+      'Power_Apparent',
+      'Power_Reactive',
+      'Power_Max',
+      'Resistance',
+      'Frequency',
+      'Crest_Factor',
+      'Power_Peak_Factor',
+      'Voltage_THD', //Total harmonic distortion of voltage
+      'ETIME', //Elapsed time under timing mode
+      'TEMP', //Temperature
+    ];
+    const result = new Map(
+      mappedMeasurements.map((value, index) => {
+        return [_map[index], parseFloat(value)];
+      })
+    );
+    this.lastReadout = result;
+    return result;
+  }
+}
+
+export { IT8615 };
+</file>
+
+<file path="packages/equipment/package.json">
+{
+    "name": "@allterco/equipment",
+    "version": "0.0.1",
+    "description": "it8615 SCPI control and measurement",
+    "type": "module",
+    "main": "it8615.js",
+    "author": "Allterco Robotics EOOD",
+    "devDependencies": {},
+    "repository": {
+      "type": "git",
+      "url": "git@gitlab.allterco.net:Shelly/fw/em3lite-calibration.git"
+    },
+    "license": "ISC"
+  }
+</file>
+
+<file path="packages/shelly/package.json">
+{
+  "name": "@allterco/shelly",
+  "version": "0.0.1",
+  "description": "Shelly devices abstraction",
+  "type": "module",
+  "main": "shelly.js",
+  "author": "Allterco Robotics EOOD",
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@gitlab.allterco.net:Shelly/fw/em3lite-calibration.git"
+  },
+  "license": "ISC"
+}
+</file>
+
+<file path="packages/shelly/shelly-3em.js">
+import { Shelly, DeviceComponent } from './shelly.js';
+
+class EM extends DeviceComponent {
+  constructor() {
+    super(...arguments);
+  }
+  async getStatus(id=0) {
+    return super.getStatus({id});
+  }
+}
+
+const EM_ERRORS = {
+  InvalidDate: 'Invalid date parameter',
+};
+
+class EMData extends DeviceComponent {
+  constructor() {
+    super(...arguments);
+  }
+  async getData(params) {
+    return this._dev.request({
+      method: [this.name, 'GetData'].join('.'),
+      params,
+    });
+  }
+  async getRecords(params) {
+    return this._dev.request({
+      method: [this.name, 'GetRecords'].join('.'),
+      params,
+    });
+  }
+  getParams(ts, end_ts, add_keys = false) {
+    return {
+      id: 0,
+      ts,
+      end_ts,
+      add_keys,
+    };
+  }
+  async *getPeriodIterator(startTS, endTS, incPeriod = 60) {
+    let _currentTS = startTS;
+    const _lastTS = endTS;
+    //cache for device returned values
+    let _emDataResult = null;
+    if (_currentTS > _lastTS)
+      throw new Error('Incorrect period. Start date should be before end date');
+    let _numberOfDeviceCalls = 0;
+    let _numberOfItems = 0;
+    let _incPeriod = incPeriod;
+    const _requestedRecords = Math.round((_lastTS - _currentTS) / _incPeriod);
+    let _recordsRemaining = _requestedRecords;
+    //start interrogating the device
+    do {
+      const _emDataParams = this.getParams(_currentTS, _lastTS);
+      try {
+        _emDataResult = await this.getData(_emDataParams);
+      } catch(e) {
+        throw e;
+      }
+      _numberOfDeviceCalls++;
+      //loop through the data packets in a response
+      for (const _dataBlock of _emDataResult.response.data) {
+        _incPeriod = _dataBlock.period;
+        _currentTS = _dataBlock.ts;
+        _recordsRemaining -= Math.round(
+          (_dataBlock.ts - _currentTS) / _incPeriod
+        );
+        //loop through the value rows in a packet
+        for (const _dataRow of _dataBlock.values) {
+          _currentTS += _incPeriod;
+          if (_currentTS > _lastTS) break;
+          _numberOfItems++;
+          _recordsRemaining--;
+          yield {
+            record: _dataRow,
+            ts: _currentTS,
+            percent: Math.round(
+              (100 * (_requestedRecords - _recordsRemaining)) /
+                _requestedRecords
+            ),
+            remaining: _recordsRemaining,
+          };
+        }
+      }
+      const _nextTS = _emDataResult.response.next_record_ts || _lastTS + 1;
+      _recordsRemaining -= Math.round((_nextTS - _currentTS) / _incPeriod);
+      _currentTS = _nextTS;
+    } while (_currentTS <= _lastTS);
+    return {
+      deviceCalls: _numberOfDeviceCalls,
+      itemsCount: _numberOfItems,
+      averageItemsPerCall:
+        Math.round((_numberOfItems / _numberOfDeviceCalls) * 100) / 100,
+    };
+  }
+}
+
+class Config extends DeviceComponent {
+  constructor() {
+    super(...arguments);
+  }
+  async get(key='') {
+    return this._dev.request({
+      method: [this.name,'Get'].join('.'),
+      ...(key && { params: {key} })
+    })
+  }
+  async set(config) {
+    return this._dev.request({
+      method: [this.name,'Set'].join('.'),
+      params: {config}
+    })
+  }
+  async save() {
+    return this._dev.request({
+      method: [this.name,'Save'].join('.')
+    })
+  }
+}
+
+class Sys extends DeviceComponent {
+  constructor() {
+    super(...arguments);
+  }
+  async reboot() {
+    return this._dev.request({
+      method: [this.name,'Reboot'].join('.')
+    })
+  }
+}
+
+class Shelly3EM extends Shelly {
+  constructor() {
+    super(...arguments);
+    this.EM = new EM(this);
+    this.EMData = new EMData(this);
+    this.Config = new Config(this);
+    this.Sys = new Sys(this);
+  }
+
+  dateToEMTS(date) {
+    if (!(date instanceof Date)) throw new Error(EM_ERRORS.InvalidDate);
+    return Math.round(date.getTime() / 1000);
+  }
+
+  setConfig(configKey, configObject) {
+    return this.request({
+      method: 'config.set',
+      params: { config: { [configKey]: configObject } },
+    });
+  }
+
+  getConfig(configKey) {
+    return this.request({
+      method: 'config.get',
+      params: {
+        key: configKey,
+      },
+    });
+  }
+
+  saveConfig(reboot = false) {
+    return this.request({
+      method: 'config.save',
+      params: { reboot: reboot },
+    });
+  }
+}
+
+export { Shelly3EM };
+</file>
+
+<file path="packages/shelly/shelly.js">
+import EventEmitter from 'events';
+
+const printVoid = (message) => {};
+class Shelly extends EventEmitter {
+  address;
+  transport;
+  messageMap;
+  messageCounter = 0;
+  info = null;
+  constructor(transport) {
+    super();
+    this.debug = console.log;
+    this.otc_ = this.onTransportConnect.bind(this);
+    this.otm_ = this.onTransportMessage.bind(this);
+    this.otcl_ = this.onTransportClose.bind(this);
+    this.messageMap = new Map();
+    this.setTransport(transport);
+  }
+  setTransport(transport = null) {
+    if (this.transport) {
+      this.transport.close();
+      this.transport.removeAllListeners('connect');
+      this.transport.removeAllListeners('message');
+      this.transport.removeAllListeners('close');
+    }
+    if (transport === null) return;
+    this.transport = transport;
+    transport.addListener('message', this.otm_);
+    transport.addListener('close', this.otcl_);
+    transport.addListener('connect', this.otc_);
+  }
+  async onTransportConnect() {
+    this.info = await this.getInfo();
+    this.emit('connect');
+  }
+  onTransportMessage(message) {
+    this.messageHandler(message);
+  }
+  onTransportClose(event) {
+    this.info = null;
+    this.emit('close');
+  }
+  async getInfo() {
+    try {
+      const _info = await this.request({ method: 'Shelly.GetDeviceInfo' });
+      return _info.response;
+    } catch (e) {
+      throw e;
+    }
+  }
+  setDebug(debugLevel) {
+    this.debug = debugLevel == 'debug' ? console.log : printVoid;
+  }
+  composeMessage({ method, params }) {
+    return {
+      jsonrpc: '2.0',
+      id: 'UID-' + this.messageCounter++,
+      src: 'shelly-client',
+      method: method,
+      ...(params && { params: params }),
+    };
+  }
+  messageHandler(message) {
+    const _message = JSON.parse(message);
+    if (this.messageMap.has(_message.id)) {
+      if(_message.error) {
+        this.messageMap.get(_message.id).reject({
+          response: _message.error,
+          method: this.messageMap.get(_message.id).method
+        })  
+      } else {
+        this.messageMap.get(_message.id).resolve({
+          response: _message.result,
+          method: this.messageMap.get(_message.id).method,
+        });
+      }
+      this.messageMap.delete(_message.id);
+    } else {
+      this.emit('Notify', _message);
+    }
+    this.debug('\n\nreceived message\n', JSON.stringify(message));
+  }
+  async request({ method, params }) {
+    const rpcMessage = this.composeMessage({ method, params });
+    const _mm = this.messageMap;
+    const _strMessage = JSON.stringify(rpcMessage);
+    this.debug(_strMessage);
+    this.transport.send(_strMessage);
+    return new Promise((resolve, reject) => {
+      _mm.set(rpcMessage.id, { resolve, reject, method });
+    });
+  }
+  async reboot(after = 0) {
+    return await this.request({
+      method: 'shelly.reboot',
+      params: {
+        delay_ms: after,
+      },
+    });
+  }
+}
+
+class DeviceComponent {
+  name;
+  constructor(device /*Shelly*/) {
+    this.name = this.constructor.name;
+    this._dev = device;
+    return new Proxy(this, {
+      get: (target, property, receiver) => {
+        if (typeof target[property] !== 'function') return target[property];
+        return (...args) => {
+          if (target.constructor.name === 'DeviceComponent')
+            throw new Error('You should call this method from a descendant');
+          return Reflect.apply(target[property], receiver, args);
+        };
+      },
+    });
+  }
+  asyncWrapDeviceCall(params) {
+    return async (params) =>
+      this.device.request({
+        method: [this.name, method].join('.'),
+        params,
+      });
+  }
+  async getConfig(params) {
+    return this._dev.request({ method: this.name + '.GetConfig', params });
+  }
+  async setConfig(params) {
+    return this._dev.request({ method: this.name + '.SetConfig', params });
+  }
+  async getStatus(params) {
+    return this._dev.request({ method: this.name + '.GetStatus', params });
+  }
+}
+
+export { Shelly, DeviceComponent };
+</file>
+
+<file path="packages/transport/package.json">
+{
+  "name": "@allterco/transport",
+  "version": "0.0.2",
+  "description": "WebSocket and UDP transport for Shelly",
+  "type": "module",
+  "author": "Allterco Robotics EOOD",
+  "dependencies": {
+    "ws": "^8.8.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@gitlab.allterco.net:Shelly/fw/em3lite-calibration.git"
+  },
+  "license": "ISC"
+}
+</file>
+
+<file path="packages/transport/udp.js">
+import dgram from 'node:dgram';
+import { EventEmitter } from 'node:events';
+
+const printVoid = (message) => {};
+
+class udpTransport extends EventEmitter {
+  address = null;
+  connected = false;
+  _socket = null;
+  _connectTimeout = 1000;
+
+  constructor(debugLevel) {
+    super();
+    this.debug = console.log;
+    this.address = null;
+    this.port = null;
+  }
+
+  setDebug(debugLevel) {
+    this.debug = debugLevel == 'debug' ? console.log : printVoid;
+  }
+
+  setAddress(address) {
+    if(!address.includes(':')) {
+      throw new Error('Provide an address in the form IP:PORT');
+    }
+    this.address = address.split(':')[0];
+    this.port = parseInt(address.split(':')[1]);
+  }
+
+  //Throws invalid address provided or no address provided exceptions
+  async connect(address = null) {
+    if (address !== null) this.setAddress(address);
+    if (this.address === null || this.port === null) throw new Error('No address and port provided');
+    const _this = this;
+    return new Promise((resolve, reject) => {
+      this.debug(`Transport is connecting to ${this.address}:${this.port}`);
+      if (this._socket) this._socket.close();
+      this._socket = new dgram.createSocket({type:'udp4'});
+      this._socket.connect(this.port, this.address)
+      this._socket.on('connect', (event) => {
+        this.connected = true;
+        clearTimeout(_connectTimeout);
+        this.emit('connect', event);
+        this.debug(`Connected to ${this.address}:${this.port}`);
+        resolve(_this);
+      });
+      this._socket.on('close', (event) => {
+        this.connected = false;
+        this.emit('close', event);
+        this.debug(`Connection closed ${this.address}:${this.port}`);
+      });
+      this._socket.on('error', () => {
+        this.debug(`Error in websocket connection ${this.address}:${this.port}`);
+        reject('Error connecting');
+      });
+      const _connectTimeout = setTimeout(() => {
+        this.debug('Shelly transport timeouting');
+        reject('Transport timeout');
+      }, this._connectTimeout);
+      this._socket.on('message', (event, rinfo) => {
+        this.emit('message', Buffer.from(event).toString('utf-8'));
+      });
+    });
+  }
+
+  close() {
+    if (this._socket) {
+      this._socket.close();
+    }
+  }
+
+  send(message) {
+    if (this._socket == null || !this.connected) return;
+    this._socket.send(message);
+  }
+}
+
+export { udpTransport };
+</file>
+
+<file path="packages/transport/websocket.js">
+import WebSocket from 'ws';
+import { EventEmitter } from 'node:events';
+
+const printVoid = (message) => {};
+
+class wsTransport extends EventEmitter {
+  address = null;
+  connected = false;
+  _ws = null;
+  _connectTimeout = 1000;
+
+  constructor(debugLevel) {
+    super();
+    this.debug = console.log;
+    this.address = null;
+  }
+
+  setDebug(debugLevel) {
+    this.debug = debugLevel == 'debug' ? console.log : printVoid;
+  }
+
+  setAddress(address) {
+    this.address = address;
+  }
+
+  async connect(address = '') {
+    if (address !== '') this.setAddress(address);
+    if (this.address == null) throw new Error('No address provided');
+    const _this = this;
+    return new Promise((resolve, reject) => {
+      this.debug('Transport is connecting to ', this.address);
+      if (this._ws) this._ws.close();
+      this._ws = new WebSocket(`ws://${this.address}/rpc`);
+      this._ws.on('open', (event) => {
+        this.connected = true;
+        clearTimeout(_connectTimeout);
+        this.emit('connect', event);
+        this.debug('Connected to ', this.address);
+        resolve(_this);
+      });
+      this._ws.on('close', (event) => {
+        this.connected = false;
+        this.emit('close', event);
+        this.debug('Connection closed ', this.address);
+      });
+      this._ws.on('error', () => {
+        this.debug('Error in websocket connection ', this.address);
+        reject('Error connecting');
+      });
+      const _connectTimeout = setTimeout(() => {
+        this.debug('Shelly transport timeouting');
+        reject('Transport timeout');
+      }, this._connectTimeout);
+      this._ws.on('message', (event) => {
+        this.emit('message', Buffer.from(event).toString('utf-8'));
+      });
+    });
+  }
+
+  close() {
+    if (this._ws) {
+      this._ws.close();
+    }
+  }
+
+  send(message) {
+    if (this._ws == null || !this.connected) return;
+    this._ws.send(message);
+  }
+}
+
+export { wsTransport };
+</file>
+
+<file path="src/model.js">
+const MEASUREMENT = {
+  voltage_a: 0,
+  voltage_b: 0,
+  voltage_c: 0,
+  current_a: 0,
+  current_b: 0,
+  current_c: 0,
+  current_n: 0,
+  apower_a: 0,
+  apower_b: 0,
+  apower_c: 0,
+  aprtpower_a: 0,
+  aprtpower_b: 0,
+  aprtpower_c: 0,
+  angle_a: 0,
+  angle_b: 0,
+  angle_c: 0,
+  pf_a: 0,
+  pf_b: 0,
+  pf_c: 0,
+};
+
+const ADE_CONFIG = {
+  voltage_scale_a: 'voltage_a',
+  voltage_scale_b: 'voltage_b',
+  voltage_scale_c: 'voltage_c',
+  current_scale_a: 'current_a',
+  current_scale_b: 'current_b',
+  current_scale_c: 'current_c',
+  current_scale_n: 'current_n',
+  apower_scale_a: 'apower_a',
+  apower_scale_b: 'apower_b',
+  apower_scale_c: 'apower_c',
+  aprtpower_scale_a: 'aprtpower_a',
+  aprtpower_scale_b: 'aprtpower_b',
+  aprtpower_scale_c: 'aprtpower_c',
+};
+
+let result = {
+  message: {
+    phase_a: {
+      voltage: 1,
+      current: 1,
+      active_power: 1,
+      apparent_power: 1,
+    },
+    phase_b: {
+      voltage: 1,
+      current: 1,
+      active_power: 1,
+      apparent_power: 1,
+    },
+    phase_c: {
+      voltage: 1,
+      current: 1,
+      active_power: 1,
+      apparent_power: 1,
+    },
+    neutral: {
+      current: 4,
+    },
+  },
+};
+
+/**
+ *
+ * @param {*} statusResult RPC result object from EM.GetStatus (result.message property)
+ * @returns MEASUREMENT record
+ */
+function measurementFromDeviceEMStatus(statusResult) {
+  const translate = {
+    voltage: 'voltage',
+    current: 'current',
+    apower: 'act_power',
+    aprtpower: 'aprt_power',
+    pf: 'pf',
+    angle: 'angle',
+  };
+  const buildMatch = new RegExp(
+    '(' + Object.keys(translate).join('|') + ')_(a|b|c|n)'
+  );
+  return Object.keys({ ...MEASUREMENT }).reduce((result, key) => {
+    const _keys = key.match(buildMatch);
+    const phase = _keys[2];
+    const type = _keys[1];
+    result[key] = statusResult[`${phase}_${translate[type]}`]
+    if(result[key] === undefined) delete result[key];
+    return result;
+  }, {});
+}
+
+//ASSUMPTION - all three CT will be on the same line so we expand all values
+//thus neutral is equal to phase current values
+/**
+ *
+ * @param {*} refValues {voltage,current,apower,aprtpower}
+ * @returns MEASUREMENT record
+ */
+function measurementFromReferenceValues(refValues) {
+  return Object.keys(MEASUREMENT).reduce((result, key) => {
+    const mkeys = key.match(
+      /(voltage|current|apower|aprtpower|frequency|pf|angle)_*/
+    );
+    if (refValues[mkeys[1]]) {
+      result[key] = refValues[mkeys[1]];
+    }
+    return result;
+  }, {});
+}
+
+function mergeMeasurements(ma, mb, transformFn, columns) {
+  return Object.keys(ma).reduce((result, key) => {
+    const _r = {};
+    _r[columns[0] || 'Original'] = ma[key];
+    _r[columns[1] || 'New'] = mb[key];
+    _r[columns[2] || 'Diff'] = transformFn(ma[key], mb[key]);
+    result[key] = _r;
+    return result;
+  }, {});
+}
+
+function measurementAccumulator(measurement = { ...MEASUREMENT }) {
+  return (newMeasurement) =>
+    Object.keys(measurement).reduce((result, key) => {
+      result[key] += newMeasurement[key];
+      return result;
+    }, measurement);
+}
+
+function measurementDivideBy(divisor) {
+  return (measurement) =>
+    Object.keys(measurement).reduce((result, key) => {
+      result[key] /= divisor;
+      return result;
+    }, measurement);
+}
+
+function measurementAdd(ma, mb) {
+  return Object.keys(ma).reduce((result, key) => {
+    result[key] = ma[key] + mb[key];
+    return result;
+  }, {});
+}
+
+function measurementMul(ma, mb) {
+  return Object.keys(ma).reduce((result, key) => {
+    result[key] = ma[key] * mb[key];
+    return result;
+  }, {});
+}
+
+function measurementDiv(ma, mb) {
+  return Object.keys(mb).reduce((result, key) => {
+    result[key] = ma[key] / mb[key];
+    return result;
+  }, {});
+}
+
+function measurementHasZero(measurement) {
+  return !Object.values(measurement).reduce((ret, value) => {
+    return ret || value === 0;
+  }, true);
+}
+
+function calcCoefficient(transofrmFn) {
+  return (coefficients, reference, measured) => {
+    return Object.keys(coefficients).reduce((result, key) => {
+      coefficients[key] = transofrmFn(
+        coefficients[key],
+        reference[key],
+        measured[key]
+      );
+      return coefficients;
+    }, {});
+  };
+}
+
+function measurementFromADEConfig(adeConfig) {
+  return Object.keys(ADE_CONFIG).reduce(
+    (result, key) => {
+      result[ADE_CONFIG[key]] = adeConfig[key];
+      return result;
+    },
+    { ...MEASUREMENT }
+  );
+}
+
+function ADEConfigFromMeasurement(measurement) {
+  return Object.keys(ADE_CONFIG).reduce((result, key) => {
+    result[key] = measurement[ADE_CONFIG[key]];
+    return result;
+  }, {});
+}
+
+function measurementResetTo(value) {
+  if (typeof value == Number)
+    return Object.keys(MEASUREMENT).reduce((result, key) => {
+      result[key] = value;
+      return result;
+    }, {});
+  if (typeof value == Object)
+    return Object.keys(MEASUREMENT).reduce((result, key) => {
+      result[key] = value[key];
+      return result;
+    }, {});
+}
+
+export {
+  measurementFromDeviceEMStatus,
+  measurementAccumulator,
+  measurementDivideBy,
+  measurementFromADEConfig,
+  ADEConfigFromMeasurement,
+  measurementFromReferenceValues,
+  calcCoefficient,
+  mergeMeasurements,
+  measurementAdd,
+  measurementMul,
+  measurementDiv,
+  measurementHasZero,
+  measurementResetTo,
+  ADE_CONFIG,
+};
+</file>
+
+<file path="src/utils.js">
+import { writeFileSync } from "fs";
+
+function jsonToFile(jsonDocument, fileName) {
+  const flattenJSON = (json) => {
+    const _flatArray = Object.entries(json).reduce(
+      (arrayResult, [key, value]) => {
+        arrayResult.push(typeof value == 'object' ? flattenJSON(value) : value);
+        return arrayResult;
+      },
+      []
+    );
+    return _flatArray.join(',');
+  };
+  writeFileSync(fileName, flattenJSON(jsonDocument) + '\n', {
+    flag: 'a+',
+  });
+}
+
+function mapToFile(map, fileName, filterFn) {
+  const flattenMap = (map_) =>
+    Array.from(map_.values())
+      .reduce((arrayResult, value) => {
+        arrayResult.push(value);
+        return arrayResult;
+      }, [])
+      .join(',');
+  writeFileSync(fileName, flattenMap(map) + '\n', { flag: 'a+' });
+}
+
+export { jsonToFile, mapToFile };
+</file>
+
+<file path=".gitignore">
+node_modules/*
+package-lock.json
+soojuspump*
+*.log
+</file>
+
+<file path="fetch_shelly_data_last_hour.sh">
+#!/bin/bash
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Get current date and time for filename in required format
+CURRENT_DATE=$(date "+%y%m%d-%H%M")
+FILENAME="soojuspump-${CURRENT_DATE}.log"
+
+# Shelly device IP address
+SHELLY_IP="192.168.3.44"
+
+# Fetch 1 hour of data with the formatted filename
+#SHELLY=$SHELLY_IP ./bin/fetch.js 1h --output $FILENAME
+
+/usr/bin/node /home/kspr/shelly-cli-tools/bin/fetch.js 1h --output $FILENAME
+
+#./bin/fetch.js 1h --shelly $SHELLY_IP --output $FILENAME
+
+echo "Data fetched and saved to $FILENAME"
+</file>
+
+<file path="fetch_shelly_data_since_last_fetch.sh">
+#!/bin/bash
+# Add full environment path
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Full path to Shelly IP
+SHELLY_IP="192.168.3.44"
+
+# Directory where log files are stored
+LOG_DIR="."
+
+# Current timestamp in ISO-8601 format
+CURRENT_TIMESTAMP=$(date "+%Y-%m-%dT%H:%M:%S")
+
+# Format filename with the current timestamp
+FILENAME="soojuspump-${CURRENT_TIMESTAMP}.log"
+
+# Find most recent log file
+LATEST_LOG=$(find ${LOG_DIR} -name "soojuspump-*.log" -type f | sort | tail -n 1)
+
+if [ -n "$LATEST_LOG" ]; then
+    # Extract timestamp directly from filename (new format: soojuspump-TIMESTAMP.log)
+    PREV_TIMESTAMP=$(basename "$LATEST_LOG" | sed 's/soojuspump-\(.*\)\.log/\1/')
+
+    echo "Found latest log: $LATEST_LOG"
+    echo "Starting fetch from: $PREV_TIMESTAMP"
+
+    # Fetch from previous timestamp until now
+    SHELLY=$SHELLY_IP /usr/bin/node /home/kspr/shelly-cli-tools/bin/fetch4.js $PREV_TIMESTAMP --output "$FILENAME"
+else
+    # If no previous log, fetch last 24 hours
+    echo "No previous log found, fetching last 24 hours"
+    SHELLY=$SHELLY_IP /usr/bin/node /home/kspr/shelly-cli-tools/bin/fetch4.js 24h --output "$FILENAME"
+fi
+
+echo "Data fetched and saved to $FILENAME"
+</file>
+
+<file path="LICENSE">
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+</file>
+
+<file path="package.json">
+{
+  "name": "shelly-pro3em-tools",
+  "version": "0.0.1",
+  "description": "Pro3EMLite Tools",
+  "type": "module",
+  "scripts": {},
+  "bin": {
+    "3em-fetch": "./bin/fetch.js",
+    "3em-read": "./bin/read.js"
+  },
+  "author": "Allterco EOOD",
+  "license": "ISC",
+  "workspaces": [
+    "packages/*"
+  ],
+  "dependencies": {
+    "@allterco/equipment": "file:packages/equipment/*",
+    "@allterco/shelly": "file:packages/shelly/*",
+    "@allterco/transport": "file:packages/transport/*",
+    "cli-progress": "^3.11.2",
+    "commander": "^9.4.0",
+    "dotenv": "^16.0.1",
+    "inquirer": "^9.1.0",
+    "serverline": "^1.6.0",
+    "ws": "^8.8.0"
+  }
+}
+</file>
+
+<file path="README.md">
+# Shelly Tools
+
+Collection of tools used to interface, test and read Shelly devices. 
+
+## Getting started
+
+npm install
+
+Given a standard node installation on a *nix or mac system make the files in `./bin` executable: 
+
+```
+chmod u+x ./bin/*.sh
+chmod u+x ./bin/*.js
+```
+
+## Device Profiles
+
+Shelly 3EM devices support two distinct profiles:
+
+- **Triphase Profile (default)**: Uses a single energy meter (EM) which combines readings per phase and provides totals for all phases.
+- **Monophase Profile**: Uses three separate energy meters (EM1), one per measured channel with separate databases (EM1Data).
+
+## Running the tools
+
+### Triphase Profile Tools (Original 3EM)
+
+#### ./bin/fetch.js
+
+Used to download data from a Pro 3EM device in triphase mode.
+
+Usage info:
+
+```
+./bin/fetch.js
+```
+
+Example:
+
+```
+./bin/fetch.js
+SHELLY=<shelly-ip> ./bin/fetch.js 1d
+```
+
+Download from the device at that IP address 1 day of data
+
+#### ./bin/read.js
+
+Read data from a triphase device, compare two devices, compare against reference values stored in json file
+
+Usage:
+
+Read data from a device
+```
+SHELLY=<shelly-ip> ./bin/read.js read
+```
+
+Example:
+```
+SHELLY=192.168.2.148 ./bin/read.js read
+Shelly Pro 3EM device at  192.168.2.148
+┌───────────────────┬───────────────┬────────────────┐
+│ (iteration index) │      Key      │     Values     │
+├───────────────────┼───────────────┼────────────────┤
+│         0         │     'mac'     │ 'EC62608A33A0' │
+│         1         │  'voltage_a'  │     235.3      │
+│         2         │  'voltage_b'  │     235.3      │
+│         3         │  'voltage_c'  │     235.3      │
+│         4         │  'current_a'  │     0.286      │
+│         5         │  'current_b'  │     0.036      │
+│         6         │  'current_c'  │     0.228      │
+│         7         │  'current_n'  │      null      │
+│         8         │  'apower_a'   │      27.1      │
+│         9         │  'apower_b'   │      3.1       │
+│        10         │  'apower_c'   │       19       │
+│        11         │ 'aprtpower_a' │      67.2      │
+│        12         │ 'aprtpower_b' │      8.6       │
+│        13         │ 'aprtpower_c' │      53.6      │
+│        14         │    'pf_a'     │     -0.63      │
+│        15         │    'pf_b'     │       -1       │
+│        16         │    'pf_c'     │     -0.61      │
+└───────────────────┴───────────────┴────────────────┘
+```
+
+Compare two devices
+```
+SHELLY=<shelly-ip> ETALON=<etalon-ip> ./bin/read.js compare
+```
+
+
+Compare against reference values in json
+```
+SHELLY=<shelly-ip> ETALON=<reference-json> ./bin/read.js compareref
+```
+
+Example:
+```
+➜ SHELLY=192.168.2.87 ETALON=./config/refs-50w-1pf.json ./bin/read.js compareref
+┌─────────────┬───────────────────┬───────────┬────────┐
+│   (index)   │     Reference     │  Device   │ Diff % │
+├─────────────┼───────────────────┼───────────┼────────┤
+│  voltage_a  │        230        │   234.1   │  1.78  │
+│  voltage_b  │        230        │   234.6   │   2    │
+│  voltage_c  │        230        │   234.4   │  1.91  │
+│  current_a  │ 0.217391304347826 │   0.327   │ 50.42  │
+│  current_b  │ 0.217391304347826 │   0.034   │ 84.36  │
+│  current_c  │ 0.217391304347826 │   0.028   │ 87.12  │
+│  current_n  │ 0.217391304347826 │   0.874   │ 302.04 │
+│  apower_a   │        50         │   -66.6   │ 233.2  │
+│  apower_b   │        50         │    2.5    │   95   │
+│  apower_c   │        50         │    0.7    │  98.6  │
+│ aprtpower_a │        50         │   70.7    │  41.4  │
+│ aprtpower_b │        50         │    7.4    │  85.2  │
+│ aprtpower_c │        50         │     6     │   88   │
+│    pf_a     │         1         │ -0.946503 │ 194.65 │
+│    pf_b     │         1         │ 0.368413  │ 63.16  │
+│    pf_c     │         1         │ 0.066651  │ 93.33  │
+└─────────────┴───────────────────┴───────────┴────────┘
+```
+
+#### Automated Data Collection (Triphase)
+
+The repository contains two bash scripts for automated data collection from triphase Shelly devices:
+
+1. **fetch_shelly_data_last_hour.sh**
+   ```bash
+   ./fetch_shelly_data_last_hour.sh
+   ```
+   Fetches the last hour of data from the Shelly device at 192.168.3.44 and saves it to a file with format `soojuspump-YYMMDD-HHMM.log`.
+
+2. **fetch_shelly_data_since_last_fetch.sh**
+   ```bash
+   ./fetch_shelly_data_since_last_fetch.sh
+   ```
+   Finds the most recent log file and fetches all data since that timestamp from the Shelly device at 192.168.3.44. If no previous log is found, it fetches the last 24 hours of data.
+
+### Monophase Profile Tools (1PM)
+
+#### ./bin/fetch-1pm.js
+
+Used to download data from a Shelly device in monophase mode.
+
+Usage:
+
+```bash
+SHELLY=<shelly-ip> ./bin/fetch-1pm.js 1d
+```
+
+To specify which channel to read (default is channel 0):
+
+```bash
+SHELLY=<shelly-ip> CHANNEL=1 ./bin/fetch-1pm.js 1d
+```
+
+#### ./bin/read-1pm.js
+
+Read data from a monophase device.
+
+Usage:
+
+```bash
+SHELLY=<shelly-ip> ./bin/read-1pm.js read
+```
+
+To specify which channel to read (default is channel 0):
+
+```bash
+SHELLY=<shelly-ip> CHANNEL=1 ./bin/read-1pm.js read
+```
+
+#### Automated Data Collection (Monophase)
+
+The repository includes a bash script for automated data collection from monophase Shelly devices:
+
+**fetch_shelly_monophase_data_since_last_fetch.sh**
+```bash
+./fetch_shelly_monophase_data_since_last_fetch.sh
+```
+
+This script fetches data from the monophase Shelly device at 192.168.3.43 using channel 0 by default. It finds the most recent log file for the specified channel and fetches all data since that timestamp. If no previous log is found, it fetches the last 24 hours of data.
+
+You can specify a different channel using the CHANNEL environment variable:
+
+```bash
+CHANNEL=1 ./fetch_shelly_monophase_data_since_last_fetch.sh
+```
+
+The data is saved to a file with the format `shelly_monophase_ch{CHANNEL}-{TIMESTAMP}.log`.
+
+### ./bin/console.js
+
+Simple tool that provides CLI for RPC to a Shelly device. Notifications and events are printed on the console.
+
+Usage:
+
+Start the console application and connect to a Shelly over WebSocket.
+```
+SHELLY=<shelly-ip> ./bin/console.js
+```
+
+Start the console application and connect to a Shelly over UDP. You need to configure UDP listen port on the Shelly device
+```
+SHELLY=<shelly-ip>:<shelly-udp-port> TRANSPORT=udp ./bin/console.js
+```
+
+## Environment
+
+You can set an environment option that a command option will default to:
+- `SHELLY=192.168.1.2 ./bin/fetch.js 1d`
+
+or you can set the defaults in `./env/.env`
+</file>
+
+</files>

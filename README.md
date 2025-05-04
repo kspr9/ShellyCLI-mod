@@ -13,11 +13,20 @@ chmod u+x ./bin/*.sh
 chmod u+x ./bin/*.js
 ```
 
+## Device Profiles
+
+Shelly 3EM devices support two distinct profiles:
+
+- **Triphase Profile (default)**: Uses a single energy meter (EM) which combines readings per phase and provides totals for all phases.
+- **Monophase Profile**: Uses three separate energy meters (EM1), one per measured channel with separate databases (EM1Data).
+
 ## Running the tools
 
-### ./bin/fetch.js
+### Triphase Profile Tools (Original 3EM)
 
-Used to download data from a Pro 3EM device.
+#### ./bin/fetch.js
+
+Used to download data from a Pro 3EM device in triphase mode.
 
 Usage info:
 
@@ -34,9 +43,9 @@ SHELLY=<shelly-ip> ./bin/fetch.js 1d
 
 Download from the device at that IP address 1 day of data
 
-### ./bin/read.js
+#### ./bin/read.js
 
-Read data from a device, compare two devices, compare against reference values stored in json file
+Read data from a triphase device, compare two devices, compare against reference values stored in json file
 
 Usage:
 
@@ -108,9 +117,78 @@ Example:
 └─────────────┴───────────────────┴───────────┴────────┘
 ```
 
+#### Automated Data Collection (Triphase)
+
+The repository contains two bash scripts for automated data collection from triphase Shelly devices:
+
+1. **fetch_shelly_data_last_hour.sh**
+   ```bash
+   ./fetch_shelly_data_last_hour.sh
+   ```
+   Fetches the last hour of data from the Shelly device at 192.168.3.44 and saves it to a file with format `soojuspump-YYMMDD-HHMM.log`.
+
+2. **fetch_shelly_data_since_last_fetch.sh**
+   ```bash
+   ./fetch_shelly_data_since_last_fetch.sh
+   ```
+   Finds the most recent log file and fetches all data since that timestamp from the Shelly device at 192.168.3.44. If no previous log is found, it fetches the last 24 hours of data.
+
+### Monophase Profile Tools (1PM)
+
+#### ./bin/fetch-1pm.js
+
+Used to download data from a Shelly device in monophase mode.
+
+Usage:
+
+```bash
+SHELLY=<shelly-ip> ./bin/fetch-1pm.js 1d
+```
+
+To specify which channel to read (default is channel 0):
+
+```bash
+SHELLY=<shelly-ip> CHANNEL=1 ./bin/fetch-1pm.js 1d
+```
+
+#### ./bin/read-1pm.js
+
+Read data from a monophase device.
+
+Usage:
+
+```bash
+SHELLY=<shelly-ip> ./bin/read-1pm.js read
+```
+
+To specify which channel to read (default is channel 0):
+
+```bash
+SHELLY=<shelly-ip> CHANNEL=1 ./bin/read-1pm.js read
+```
+
+#### Automated Data Collection (Monophase)
+
+The repository includes a bash script for automated data collection from monophase Shelly devices:
+
+**fetch_shelly_monophase_data_since_last_fetch.sh**
+```bash
+./fetch_shelly_monophase_data_since_last_fetch.sh
+```
+
+This script fetches data from the monophase Shelly device at 192.168.3.43 using channel 0 by default. It finds the most recent log file for the specified channel and fetches all data since that timestamp. If no previous log is found, it fetches the last 24 hours of data.
+
+You can specify a different channel using the CHANNEL environment variable:
+
+```bash
+CHANNEL=1 ./fetch_shelly_monophase_data_since_last_fetch.sh
+```
+
+The data is saved to a file with the format `shelly_monophase_ch{CHANNEL}-{TIMESTAMP}.log`.
+
 ### ./bin/console.js
 
-Simple tool that prvides CLI for RPC to a Shelly device. Notifications and events are printed on the console.
+Simple tool that provides CLI for RPC to a Shelly device. Notifications and events are printed on the console.
 
 Usage:
 
