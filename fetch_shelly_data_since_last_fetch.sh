@@ -25,11 +25,12 @@ if [ -n "$LATEST_LOG" ]; then
     echo "Starting fetch from: $PREV_TIMESTAMP"
 
     # Fetch from previous timestamp until now
-    SHELLY=$SHELLY_IP /usr/bin/node /home/kspr/shelly-cli-tools/bin/fetch4.js $PREV_TIMESTAMP --output "$FILENAME"
+    SHELLY=$SHELLY_IP CHANNEL=$CHANNEL $NODE_CMD "$(dirname "$0")/bin/fetch4.js" $PREV_TIMESTAMP --output "$FILENAME"
+    echo "Data fetched and saved to $FILENAME"
 else
     # If no previous log, fetch last 24 hours
     echo "No previous log found, fetching last 24 hours"
-    SHELLY=$SHELLY_IP /usr/bin/node /home/kspr/shelly-cli-tools/bin/fetch4.js 24h --output "$FILENAME"
+    SHELLY=$SHELLY_IP CHANNEL=$CHANNEL $NODE_CMD "$(dirname "$0")/bin/fetch4.js" 24h --output "$FILENAME"
+    echo "Data fetched and saved to $FILENAME"
 fi
 
-echo "Data fetched and saved to $FILENAME"
